@@ -78,7 +78,7 @@ class Spy():
     @property
     def score(self):
         return self._score
-    
+
     @property
     def direction(self):
         return self._direction
