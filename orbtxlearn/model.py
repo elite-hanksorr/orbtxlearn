@@ -1,109 +1,108 @@
+import functools
+from collections import defaultdict
+import math
+
 import tensorflow as tf
 import numpy as np
 
-CONV1_FEATURES = 8
-CONV2_FEATURES = 16
-CONV3_FEATURES = 32
-FILTER_SIZE = 5
+PRE_LSTM_CONV_FEATURES = [10, 15, 20, 25, 32]
+CONV_FILTER_SIZE = 5
 
-HIDDEN1 = 2048
+PRE_LSTM_FC_NODES = [1024]
 STATE_SIZE = 256
-HIDDEN3 = 128
-HIDDEN4 = 64
+POST_LSTM_FC_NODES = [64, 16]
 
-def conv2d_max(images, W, strides=1, pooling=2):
-    conv = tf.nn.conv2d(images, W, [1, strides, strides, 1], padding='SAME')
-    return tf.layers.max_pooling2d(conv, pooling, pooling, padding='VALID')
+def in_variable_scope(*vscope_args, **vscope_kwargs):
+    def wrapper(f):
+        @functools.wraps(f)
+        def wrapped(*f_args, **f_kwargs):
+            with tf.variable_scope(*vscope_args, **vscope_kwargs):
+                return f(*f_args, **f_kwargs)
+        return wrapped
+    return wrapper
 
-def lstm(batches, x, y, channels, state_len):
-    state = tf.get_variable('state', [1, state_len])
-    images = tf.placeholder(tf.float32, [batches, y, x, channels], 'images')
+def in_name_scope(*nscope_args, **nscope_kwargs):
+    def wrapper(f):
+        @functools.wraps(f)
+        def wrapped(*f_args, **f_kwargs):
+            with tf.name_scope(*nscope_args, **nscope_kwargs):
+                return f(*f_args, **f_kwargs)
+        return wrapped
+    return wrapper
 
-    k1 = tf.placeholder(tf.float32, [FILTER_SIZE, FILTER_SIZE, channels, CONV1_FEATURES], 'k1')
-    conv1 = conv2d_max(images, k1)
-    print(conv1.get_shape())
 
-    k2 = tf.placeholder(tf.float32, [FILTER_SIZE, FILTER_SIZE, CONV1_FEATURES, CONV2_FEATURES], 'k2')
-    conv2 = conv2d_max(conv1, k2)
-    print(conv2.get_shape())
+@in_variable_scope(None, default_name='5x5conv2d_2x2maxpool')
+def conv2d_max(images, depth, strides=1, pooling=2):
+    conv = tf.contrib.layers.conv2d(images, depth, CONV_FILTER_SIZE, activation_fn=tf.nn.leaky_relu)
+    pooled = tf.layers.max_pooling2d(conv, pooling, pooling, padding='VALID')
+    return pooled
 
-    k3 = tf.placeholder(tf.float32, [FILTER_SIZE, FILTER_SIZE, CONV2_FEATURES, CONV3_FEATURES], 'k3')
-    conv3 = conv2d_max(conv2, k3, pooling=4)
-    print(conv3.get_shape())
+@in_variable_scope('lstm', default_name='lstm', reuse=tf.AUTO_REUSE)
+def lstm(layer, state_size):
+    batches, _ = layer.shape.as_list()
+    # layer = tf.reshape(layer, [-1])
 
-    w1 = tf.placeholder(tf.float32, [CONV3_FEATURES * (x//16) * (y//16), HIDDEN1], 'w1')
-    b1 = tf.placeholder(tf.float32, [HIDDEN1], 'b1')
-    layer1 = tf.nn.relu(tf.reshape(conv3, [1, -1]) @ w1 + b1)
+    cell = tf.contrib.rnn.LSTMBlockCell(state_size, use_peephole=True)
+    c, h = cell.zero_state(batches, tf.float32)
 
-    w2 = tf.placeholder(tf.float32, [HIDDEN1, STATE_SIZE], 'w2')
-    b2 = tf.placeholder(tf.float32, [STATE_SIZE], 'b2')
-    layer2 = tf.nn.relu(layer1 @ w2 + b2)
+    var_c = tf.get_variable('c', initializer=c)
+    var_h = tf.get_variable('h', initializer=h)
 
-    forget = tf.placeholder(tf.float32, [STATE_SIZE], 'forget')
-    assignment = tf.assign(state, (1-forget)*state + forget*layer2)
+    output, (new_c, new_h) = cell(layer, (var_c, var_h))
+    with tf.control_dependencies([tf.assign(var_c, new_c), tf.assign(var_h, new_h)]):
+        return tf.identity(output)
 
-    w3 = tf.placeholder(tf.float32, [STATE_SIZE, HIDDEN3], 'w3')
-    b3 = tf.placeholder(tf.float32, [HIDDEN3], 'b3')
-    with tf.control_dependencies([assignment]):
-        layer4 = tf.nn.relu(state @ w3 + b3)
-        
-    w4 = tf.placeholder(tf.float32, [HIDDEN3, HIDDEN4], 'w4')
-    b4 = tf.placeholder(tf.float32, [HIDDEN4], 'b4')
-    layer5 = tf.nn.relu(layer4 @ w4 + b4)
-        
-    w5 = tf.placeholder(tf.float32, [HIDDEN4, 2], 'w5')
-    b5 = tf.placeholder(tf.float32, [2], 'b5')
-    output = tf.nn.relu(layer5 @ w5 + b5)
+def make_model(batches, x, y, channels, state_size):
+    images = tf.placeholder(tf.float32, [batches, y, x, channels], name='images')
+    layer = images
+    layers = defaultdict(list)
 
-    return ({
-        'state': state,
-        'images': images,
-        'k1': k1,
-        'k2': k2,
-        'k3': k3,
-        'w1': w1,
-        'b1': b1,
-        'w2': w2,
-        'b2': b2,
-        'w3': w3,
-        'b3': b3,
-        'w4': w4,
-        'b4': b4,
-        'w5': w5,
-        'b5': b5,
-    },
-    {
-        'output': output
-    },
-    {
-        'conv1': conv1,
-        'conv2': conv2,
-        'conv3': conv3,
-        'layer1': layer1,
-        'layer2': layer2,
-        'state': assignment,
-        'layer4': layer4,
-        'layer5': layer5
-    })
+    for i, n in enumerate(PRE_LSTM_CONV_FEATURES):
+        layer = conv2d_max(layer, n)
+        print(f'pre_lstm_conv[{i}]: {layer.shape.as_list()}')
+        layers['pre_lstm_conv'].append(layer)
 
-with tf.Session() as sess:
-    inputs, outputs, layers = lstm(1, 480, 480, 3, STATE_SIZE)
-    sess.run(inputs['state'], feed_dict={
-        inputs['images']:np.zeros((1, 480, 480, 3)),
-        inputs['state']:np.zeros((1, STATE_SIZE)),
-        inputs['k1']:np.zeros((FILTER_SIZE, FILTER_SIZE, 3, CONV1_FEATURES)),
-        inputs['k2']:np.zeros((FILTER_SIZE, FILTER_SIZE, CONV1_FEATURES, CONV2_FEATURES)),
-        inputs['k3']:np.zeros((FILTER_SIZE, FILTER_SIZE, CONV2_FEATURES, CONV3_FEATURES)),
-        inputs['w1']:np.zeros((CONV3_FEATURES * (480//16) * (480//16), HIDDEN1)),
-        inputs['b1']:np.zeros((HIDDEN1,)),
-        inputs['w2']:np.zeros((HIDDEN1, STATE_SIZE)),
-        inputs['b2']:np.zeros((STATE_SIZE,)),
-        inputs['w3']:np.zeros((STATE_SIZE, HIDDEN3)),
-        inputs['b3']:np.zeros((HIDDEN3,)),
-        inputs['w4']:np.zeros((HIDDEN3, HIDDEN4)),
-        inputs['b4']:np.zeros((HIDDEN4,)),
-        inputs['w5']:np.zeros((HIDDEN4, 2)),
-        inputs['b5']:np.zeros((2,)),
+    layer = tf.reshape(layer, [1, -1])
+    for i, n in enumerate(PRE_LSTM_FC_NODES + [STATE_SIZE]):
+        layer = tf.contrib.layers.fully_connected(layer, n, activation_fn=tf.nn.leaky_relu)
+        print(f'pre_lstm_fc[{i}]: {layer.shape.as_list()}')
+        layers['pre_lstm_fc'].append(layer)
+
+    layer = lstm(layer, STATE_SIZE)
+    print(f'state: {layer.shape.as_list()}')
+    layers['state'].append(layer)
+
+    for i, n in enumerate(POST_LSTM_FC_NODES):
+        layer = tf.contrib.layers.fully_connected(layer, n, activation_fn=tf.nn.leaky_relu)
+        layers['post_lstm_fc'].append(layer)
+        print(f'post_lstm_fc[{i+1}]: {layer.shape.as_list()}')
+
+    output = tf.nn.softmax(tf.contrib.layers.fully_connected(layer, 2, activation_fn=tf.nn.softmax))
+    print(f'output: {output.shape.as_list()}')
+
+    return \
+        ({
+            'images': images,
+        },
+        {
+            'output': output,
+        },
+        {
+            'pre_lstm_conv': layers['pre_lstm_conv'],
+            'pre_lstm_fc': layers['pre_lstm_fc'],
+            'state': layers['state'],
+            'post_lstm_fc': layers['post_lstm_fc'],
         })
+
+tf.reset_default_graph()
+with tf.Session() as sess:
+    inputs, outputs, layers = make_model(1, 480, 480, 3, STATE_SIZE)
+    sess.run(tf.global_variables_initializer())
+    sess.run(outputs['output'], feed_dict={
+        inputs['images']: np.zeros((1, 480, 480, 3))
+    })
+    sess.run(outputs['output'], feed_dict={
+        inputs['images']: np.zeros((1, 480, 480, 3))
+    })
     writer = tf.summary.FileWriter('log', sess.graph)
     writer.close()
