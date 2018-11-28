@@ -1,18 +1,25 @@
 import functools
-from collections import defaultdict, deque
+import collections
+import logging
 import math
 import time
-from typing import Generator, List, Tuple, Dict, Union
+from typing import Generator, List, Tuple, Dict, Union, NamedTuple
 
 import tensorflow as tf
 import numpy as np
 
-PRE_LSTM_CONV_FEATURES = [10, 15, 20, 25, 32]
-CONV_FILTER_SIZE = 5
+from . import config
 
-PRE_LSTM_FC_NODES = [1024]
-STATE_SIZE = 256
-POST_LSTM_FC_NODES = [64, 16]
+__all__ = ['CATEGORIES', '']
+
+log = logging.getLogger(__name__)
+log.setLevel(logging.INFO)
+
+
+CATEGORIES = {
+    'keydown': 0,
+    'keyup': 1
+}
 
 def in_variable_scope(*vscope_args, **vscope_kwargs):
     '''Decorate a function with this to wrap the body in tf.variable_scope'''
@@ -36,20 +43,25 @@ def in_name_scope(*nscope_args, **nscope_kwargs):
         return wrapped
     return wrapper
 
+@in_name_scope('conv2d')
+def conv2d(images, filter_size, strides, depth):
+    '''Convolutional layer.
 
-@in_variable_scope(None, default_name='conv2d_2x2maxpool')
-def conv2d_max(images, depth, filter_size=CONV_FILTER_SIZE, strides=1, pooling=2):
-    '''Convolution followed by maxpool.
+    :param images: Tensor of shape [batch_size, height, width, in_channels]
+    :param filter_size: Convolution filter size
+    :param strides: Convolution stride size
+    :param depth: Number of output channels'''
 
-    :param images: Tensor of shape [batch_size, height, width, channels]
-    :param depth: Number of feature maps/output channels
-    :param filter_size: Convolution filter size (default 5)
-    :param strides: Convolution stride size (default 1)
-    :param pooling: Maxpool cluster size (default 2)'''
+    _, _, _, channels = images.shape.as_list()
 
-    conv = tf.contrib.layers.conv2d(images, depth, filter_size, activation_fn=tf.nn.leaky_relu)
-    pooled = tf.layers.max_pooling2d(conv, pooling, pooling, padding='VALID')
-    return pooled
+    if isinstance(strides, (list, tuple, np.ndarray)):
+        strides = [1, strides[0], strides[1], 1]
+    else:
+        strides = [1, strides, strides, 1]
+
+    filter = tf.Variable(tf.initializers.glorot_normal()([filter_size, filter_size, channels, depth]))
+    conv = tf.nn.conv2d(images, filter, strides, padding='SAME')
+    return tf.nn.leaky_relu(conv)
 
 @in_variable_scope('lstm', default_name='lstm', reuse=tf.AUTO_REUSE)
 def lstm(layer):
@@ -60,55 +72,56 @@ def lstm(layer):
     layer = tf.reshape(layer, [1, -1])
     n = layer.shape.as_list()[1]
 
-    cell = tf.contrib.rnn.LSTMBlockCell(1, use_peephole=True)
-    c, h = cell.zero_state(1, tf.float32)
+    cell = tf.contrib.rnn.LSTMBlockCell(n, use_peephole=True)
+    zero = cell.zero_state(1, tf.float32)
+    state_vars = [tf.get_variable(f'lstm_state{i}', initializer=state) for i,state in enumerate(zero)]
 
-    var_c = tf.get_variable('c', initializer=c)
-    var_h = tf.get_variable('h', initializer=h)
-
-    output, (new_c, new_h) = cell(layer, (var_c, var_h))
-    with tf.control_dependencies([tf.assign(var_c, new_c), tf.assign(var_h, new_h)]):
+    output, new_states = cell(layer, state_vars)
+    with tf.control_dependencies([tf.assign(state_var, new_state) for state_var,new_state in zip(state_vars, new_states)]):
         return tf.identity(output)
 
 def make_model(batches: int, height: int, width: int, channels: int) \
     -> Tuple[Dict[str, List[tf.Variable]], Dict[str, List[tf.Variable]], Dict[str, List[tf.Variable]]]:
 
     images = tf.placeholder(tf.float32, [batches, height, width, channels], name='images')
-    layer = images
-    layers = defaultdict(list)
+    layer = images / 256
+    layers: Dict[str, List] = collections.defaultdict(list)
 
-    for i, n in enumerate(PRE_LSTM_CONV_FEATURES):
-        layer = conv2d_max(layer, n)
+    for i, (filter_size, stride, depth) in enumerate(config.params.pre_lstm_conv_layers):
+        layer = conv2d(layer, filter_size, stride, depth)
         # print(f'pre_lstm_conv[{i}]: {layer.shape.as_list()}')
         layers['pre_lstm_conv'].append(layer)
+        tf.summary.image(f'conv{i}', tf.transpose(layer, [3, 1, 2, 0]), layer.shape.as_list()[3])  # Swap batch_size and channels
 
-    layer = tf.reshape(layer, [1, -1])
-    for i, n in enumerate(PRE_LSTM_FC_NODES + [STATE_SIZE]):
-        layer = tf.contrib.layers.fully_connected(layer, n, activation_fn=tf.nn.leaky_relu)
+    layer = tf.reshape(layer, [batches, -1])
+    for i, n in enumerate(config.params.pre_lstm_fc_nodes + [config.params.state_size]):
+        layer = tf.layers.dense(layer, n, kernel_initializer=tf.initializers.glorot_normal(), activation=tf.nn.leaky_relu)
         # print(f'pre_lstm_fc[{i}]: {layer.shape.as_list()}')
         layers['pre_lstm_fc'].append(layer)
 
-    layer = lstm(layer)
+    #layer = lstm(layer)
     # print(f'state: {layer.shape.as_list()}')
     layers['state'].append(layer)
 
-    layer = tf.reshape(layer, [1, -1])
+    layer = tf.reshape(layer, [batches, -1])
 
-    for i, n in enumerate(POST_LSTM_FC_NODES):
-        layer = tf.contrib.layers.fully_connected(layer, n, activation_fn=tf.nn.leaky_relu)
+    for i, n in enumerate(config.params.post_lstm_fc_nodes):
+        layer = tf.layers.dense(layer, n, kernel_initializer=tf.initializers.glorot_normal(), activation=tf.nn.leaky_relu)
         layers['post_lstm_fc'].append(layer)
         # print(f'post_lstm_fc[{i+1}]: {layer.shape.as_list()}')
 
-    output = tf.nn.softmax(tf.contrib.layers.fully_connected(layer, 2, activation_fn=tf.nn.softmax))
-    output = tf.reshape(output, [-1])
-    # print(f'output: {output.shape.as_list()}')
+    logits = tf.identity(tf.layers.dense(layer, 2, kernel_initializer=tf.initializers.glorot_normal(), activation=None), name='logits')
+    softmax = tf.nn.softmax(logits)
+    action = tf.squeeze(tf.random.multinomial(logits, 1), name='action')
 
     return \
         ({
             'images': images,
         },
         {
-            'output': output,
+            'logits': logits,
+            'softmax': softmax,
+            'action': action,
         },
         {
             'pre_lstm_conv': layers['pre_lstm_conv'],
@@ -117,76 +130,85 @@ def make_model(batches: int, height: int, width: int, channels: int) \
             'post_lstm_fc': layers['post_lstm_fc'],
         })
 
-def test_model(size: int = 360) -> Union[float, int]:
-    tf.reset_default_graph()
-    with tf.Session() as sess:
-        inputs, outputs, layers = make_model(1, size, size, 3)
-        sess.run(tf.global_variables_initializer())
+@in_name_scope('train')
+def make_optimizer(batches: int, logits_layer):
+    actions = tf.placeholder(tf.int32, shape=[batches], name='actions_placeholder')
+    rewards = tf.placeholder(tf.float32, shape=[batches], name='rewards_placeholder')
 
-        start = time.time()
-        for i in range(10):
-            o = sess.run(outputs['output'], feed_dict={
-                inputs['images']: np.zeros((1, size, size, 3))
-            })
-            # print(o)
+    one_hot = tf.one_hot(tf.reshape(actions, [batches]), 2)
 
-        delta = time.time() - start
-        print(f'10 iterations of {size}x{size}: {delta:.2f}s')
+    cross_entropies = tf.losses.softmax_cross_entropy(onehot_labels=one_hot, logits=logits_layer)
+    loss = tf.reduce_sum(rewards * cross_entropies)
+    adam = tf.train.AdamOptimizer(config.training.learning_rate)
+    optimizer = adam.minimize(loss, global_step=tf.train.get_or_create_global_step())
 
-        writer = tf.summary.FileWriter('log', sess.graph)
-        writer.close()
+    tf.summary.histogram('cross_entropies', cross_entropies)
+    tf.summary.histogram('rewards', rewards)
+    tf.summary.scalar('loss', loss)
 
-        return delta
-
-class Agent():
-    def __init__(height: int, width: int, channels: int):
-        '''Makes a game agent using make_model().'''
-
-        tf.reset_default_graph()
-        self._sess = tf.Session()
-
-        self._inputs, self._outputs, self._layers = make_model(1, height, width, channels)
-        self._sess.run(tf.global_variables_initializer())
-
-    def __call__(self, image: np.ndarray) -> bool:
-        '''Evaluate the model with a new image.
-
-        :param image: An np.ndarray of shape (height, width, channels)
-        :returns: A bool representing whether we should send OrbtXL a keydown (True) or keyup (False)'''
-
-        keydown, keyup = self._sess.run(outputs['output'], feed_dict={
-            inputs['images']: image.reshape((1, height, width, channels))
+    return \
+        ({
+            'actions': actions,
+            'rewards': rewards
+        },
+        {
+            'loss': loss,
+            'optimizer': optimizer
+        },
+        {
         })
 
-        return keydown >= 0.5
+def test_model(size: int = 480) -> Union[float, int]:
+    tf.reset_default_graph()
 
-    def close(self):
-        '''Close the tf.Session'''
+    config = tf.ConfigProto()
+    config.gpu_options.allow_growth = True
 
-        self._sess.close()
+    with tf.Session(config=config) as sess:
+        inputs, outputs, layers = make_model(1, size, size, 3)
 
+        sess.run(tf.global_variables_initializer())
+
+        o = sess.run(outputs['keydown'], feed_dict={
+            inputs['images']: np.zeros((1, size, size, 3))
+        })
+        log.debug(o)
+
+        return o
 
 def find_reasonable_image_size() -> None:
     '''Test various image sizes, and choose the largest image size that takes less
     than 100ms to process through our model.'''
 
     SIZES = [12, 24, 36, 48, 60, 72, 84, 96]
+
+    # Force tensorflow to do optimizations now, to not skew test results
+    test_model(60)
+
     magnitude = 1
     last_reasonable = None
-    while True:
+    okay = True
+    while okay:
+        okay = False
         for n in SIZES:
             n *= magnitude
-            if n < 2**len(PRE_LSTM_CONV_FEATURES):
+            try:
+                delta = test_model(n)
+                if delta > 1.0:
+                    break
+            # If we're using maxpooling, an image that's too small may raise ValueError
+            except ValueError:
                 continue
-            delta = test_model(n)
-
-            if delta <= 1.0:
-                last_reasonable = n
-            elif last_reasonable is not None:
-                print(f'Use {last_reasonable}x{last_reasonable}')
-                return
+            # If the model is too large for memory, then just stop here
+            except tf.errors.ResourceExhaustedError:
+                break
             else:
-                print(f'No image size large enough for {len(PRE_LST_CONV_FEATURES)} convolutions ran faster than 100ms')
-                return
+                last_reasonable = n
+        else:
+            okay = True
+            magnitude *= 10
 
-        magnitude *= 10
+    if last_reasonable is not None:
+        print(f'Okay to use up to {last_reasonable}x{last_reasonable}')
+    else:
+        print(f'No image size large enough for {len(config.params.pre_lstm_conv_layers)} convolutions and small enough to fit in memory ran faster than 100ms')
