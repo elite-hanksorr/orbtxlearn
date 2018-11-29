@@ -3,7 +3,7 @@ import collections
 import logging
 import math
 import time
-from typing import Generator, List, Tuple, Dict, Union, NamedTuple
+from typing import Generator, List, Tuple, Dict, Union, NamedTuple, Any
 
 import tensorflow as tf
 import numpy as np
@@ -44,13 +44,15 @@ def in_name_scope(*nscope_args, **nscope_kwargs):
     return wrapper
 
 @in_name_scope('conv2d')
-def conv2d(images, filter_size, strides, depth):
+def conv2d(images, filter_size: int, strides: Union[int, List], depth: int, padding: str):
     '''Convolutional layer.
 
     :param images: Tensor of shape [batch_size, height, width, in_channels]
     :param filter_size: Convolution filter size
     :param strides: Convolution stride size
-    :param depth: Number of output channels'''
+    :param depth: Number of output channels
+    :param padding: Which padding to use. 'SAME' or 'VALID'
+    '''
 
     _, _, _, channels = images.shape.as_list()
 
@@ -60,11 +62,11 @@ def conv2d(images, filter_size, strides, depth):
         strides = [1, strides, strides, 1]
 
     filter = tf.Variable(tf.initializers.glorot_normal()([filter_size, filter_size, channels, depth]))
-    conv = tf.nn.conv2d(images, filter, strides, padding='SAME')
+    conv = tf.nn.conv2d(images, filter, strides, padding=padding)
     return tf.nn.leaky_relu(conv)
 
 @in_variable_scope('lstm', default_name='lstm', reuse=tf.AUTO_REUSE)
-def lstm(layer):
+def lstm(layer) -> Any:
     '''LSTM cell using the efficient tf.contrib.rnn.LSTMBlockFusedCell
 
     :param layer: A tensor. The size of the LSTM is the size of this tensor'''
@@ -87,8 +89,8 @@ def make_model(batches: int, height: int, width: int, channels: int) \
     layer = images / 256
     layers: Dict[str, List] = collections.defaultdict(list)
 
-    for i, (filter_size, stride, depth) in enumerate(config.params.pre_lstm_conv_layers):
-        layer = conv2d(layer, filter_size, stride, depth)
+    for i, (filter_size, stride, depth, padding) in enumerate(config.params.pre_lstm_conv_layers):
+        layer = conv2d(layer, filter_size, stride, depth, padding)
         # print(f'pre_lstm_conv[{i}]: {layer.shape.as_list()}')
         layers['pre_lstm_conv'].append(layer)
         tf.summary.image(f'conv{i}', tf.transpose(layer, [3, 1, 2, 0]), layer.shape.as_list()[3])  # Swap batch_size and channels

@@ -7,7 +7,7 @@ def get_log_dir() -> str:
 monitor = 1  # TODO have user select this
 
 class params:
-    image_size = 480  # Width and height of screenshots
+    image_size = 228  # Width and height of screenshots
 
     reward_nothing = 0  # Passive reward for accomplishing nothing but still not failing
     reward_score = 1  # Reward for scoring one OrbtXL point
@@ -16,10 +16,10 @@ class params:
 
     # [(filter_size, stride_size, output_depth)]
     pre_lstm_conv_layers = [
-        (8, 4, 12),
-        (5, 2, 16),
-        (4, 2, 20),
-        (3, 2, 24)
+        (8, 2, 12, 'VALID'),
+        (5, 2, 16, 'VALID'),
+        (4, 2, 20, 'VALID'),
+        (3, 1, 24, 'VALID')
     ]
     pre_lstm_fc_nodes = [1024]
     state_size = 256
