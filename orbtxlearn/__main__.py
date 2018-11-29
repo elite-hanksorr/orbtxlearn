@@ -7,7 +7,6 @@ from typing import List, Tuple, Any
 import click
 import numpy as np
 import tensorflow as tf
-import pyautogui
 
 from . import Spy, Agent, model, config
 
@@ -21,7 +20,10 @@ def main():
 @main.command()
 @click.option('--host', type=str, default='localhost')
 @click.option('--port', type=int, default=2600)
-def run(host: str, port: int) -> None:
+@click.option('--save-model', default=False, help='Save model checkpoints')
+@click.option('--restore-model', default=False, help='Restore model before training')
+@click.option('--save-episodes', default=False, help='Save episodes to disk')
+def run(host: str, port: int, save_model: bool, restore_model: bool, save_episodes:bool) -> None:
 
     _q: queue.Queue = queue.Queue()
     def spy_update_callback(event_type: str, value: Any, spy: Spy) -> None:
@@ -29,15 +31,13 @@ def run(host: str, port: int) -> None:
         _q.put((event_type, value))
 
     agent = Agent(SCREENSHOT_SIZE, SCREENSHOT_SIZE, 3)
-    spy = Spy(host, port, MONITOR, spy_update_callback)
+    spy = Spy.make_spy(host, port, MONITOR, spy_update_callback)
 
-    random_episodes_left = config.training.minimum_random_episodes
     done = False
-    episodes_until_eval = 5
     try:
         while not done:
 
-            print('Resetting for {} round...'.format('collection' if episodes_until_eval else 'eval'))
+            print('Resetting round...')
             # Wait until we're playing
             while not spy.playing:
                 time.sleep(0.05)
@@ -47,15 +47,12 @@ def run(host: str, port: int) -> None:
             while spy.playing:
                 im = spy.screenshot(SCREENSHOT_SIZE)
 
-                if episodes_until_eval == 0:
-                    keydown = agent.feed(im)
-                else:
-                    keydown = agent.collect(im)
+                keydown = agent.feed(im)
 
                 if keydown:
-                    pyautogui.keyDown('space')
+                    spy.keydown()
                 else:
-                    pyautogui.keyUp('space')
+                    spy.keyup()
 
                 # Poll for new events
                 while True:
@@ -67,17 +64,10 @@ def run(host: str, port: int) -> None:
                     if event_type == 'score':
                         agent.reward(value * config.params.reward_score)
                     elif event_type == 'playing' and value == False:
-                        pyautogui.keyUp('space')
+                        spy.keyup()
                         agent.gameover()
-                        if random_episodes_left > 0:
-                            agent.randomize_model()
-                            random_episodes_left -= 1
-                        else:
-                            agent.train(spy.score, spy.pps)
+                        agent.train(spy.score, spy.pps)
 
-            episodes_until_eval -= 1
-            if episodes_until_eval < 0:
-                episodes_until_eval = 5
             spy.round_reset()
 
     finally:

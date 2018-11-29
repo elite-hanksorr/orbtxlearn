@@ -3,18 +3,13 @@ import socket
 import sys
 import threading
 import time
-from typing import Optional, Callable, Any, Tuple, Union
+from typing import Optional, Callable, Any, Tuple, Union, List
 
 import mss
 import numpy as np
+from PIL import Image
+import pyautogui
 import skimage.transform
-
-if sys.platform.startswith('linux'):
-    import xdo
-elif sys.platform == 'win32':
-    import ctypes
-else:
-    raise RuntimeError(f'Not implemented for platform {sys.platform} yet')
 
 __all__ = ['Spy']
 
@@ -22,6 +17,17 @@ class Spy(ABC):
     DIR_CW = -1
     DIR_CCW = 1
     DIR_UNINITIALIZED = 0
+
+    @classmethod
+    def make_spy(cls, *args, **kwargs) -> 'Spy':
+        if sys.platform.startswith('linux'):
+            from . import linux
+            return linux.LinuxSpy(*args, **kwargs)
+        elif sys.platform == 'win32':
+            from . import win32
+            return win32.WindowsSpy(*args, **kwargs)
+        else:
+            raise RuntimeError(f'Not implemented for platform {sys.platform} yet')
 
     def __init__(self, host: str = 'localhost', port: int = 2600, monitor: int = 1,
                  callback: Optional[Callable[[str, Any, 'Spy'], None]] = None):
@@ -49,13 +55,13 @@ class Spy(ABC):
         self._read_thread = threading.Thread(target=self._read_loop, daemon=True)
         self._read_thread.start()
 
-    @abstractmethod
-    def keydown(self, key: str) -> None:
-        pass
+        self._screenshot_latencies: List[Tuple[float, float]] = []
 
-    @abstractmethod
-    def keyup(self, key: str) -> None:
-        pass
+    def keydown(self) -> None:
+        pyautogui.keyDown('space')
+
+    def keyup(self) -> None:
+        pyautogui.keyUp('space')
 
     def _send(self, data: str) -> None:
         with self._send_lock:
@@ -128,12 +134,7 @@ class Spy(ABC):
 
         self._send('command:restart')
 
-    def screenshot(self, size: int) -> np.ndarray:
-        '''Takes a square screenshot'''
-        # start = time.time()
-
-        im = np.array(self._sct.grab(self._sct_monitor))
-        # print(im, im.shape, time.time() - start)
+    def _resize_ndarray(self, size: int, im: np.ndarray) -> np.ndarray:
         h, w, channels = im.shape
         assert channels >= 3
 
@@ -141,13 +142,40 @@ class Spy(ABC):
         smaller = min(w, h)
         im = im[(h-smaller)//2:(h+smaller)//2, (w-smaller)//2:(w+smaller)//2, 0:3]
         assert im.shape[0] == im.shape[1]
-        # print(im, im.shape, time.time() - start)
 
         # Resize
         im = skimage.img_as_ubyte(skimage.transform.resize(im, [size, size], mode='reflect', anti_aliasing=False))
-        # print(im, time.time() - start)
 
+        # BGR -> RGB
         im[:,:,[0,2]] = im[:,:,[2,0]]
-        # print(im, time.time() - start)
-        # import pdb; pdb.set_trace()
+
         return im
+
+    def _resize_pil(self, size, im):
+        w, h = im.size
+
+        # Make square
+        smaller = min(w, h)
+        im = im.crop(((h-smaller)//2, (w-smaller)//2, (h+smaller)//2, (w+smaller)//2))
+        assert im.size[0] == im.size[1]
+
+        # Resize
+        im = im.resize((size, size))
+
+        return np.array(im)
+
+    def screenshot(self, size: int) -> np.ndarray:
+        '''Takes a square screenshot'''
+        time_start = time.time()
+        im = np.array(self._sct.grab(self._sct_monitor))
+        time_captured = time.time()
+        # resized = self._resize_pil(size, np.array(im)[:,:,[2,1,0]])
+        resized = self._resize_pil(size, Image.fromarray(np.array(im)[:,:,[2,1,0]], 'RGB'))
+        time_resized = time.time()
+
+        t0 = time_captured - time_start
+        t1 = time_resized - time_captured
+        print(f'capture: {1000*t0:6.1f}ms resize: {1000*t1:6.1f}ms', end=' ')
+        self._screenshot_latencies.append((t0, t1))
+
+        return resized
