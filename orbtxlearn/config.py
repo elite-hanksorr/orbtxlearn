@@ -4,6 +4,8 @@ import os.path
 def get_log_dir() -> str:
     return os.path.join('tf_logs', datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
 
+monitor = 1  # TODO have user select this
+
 class params:
     image_size = 480  # Width and height of screenshots
 

@@ -10,9 +10,6 @@ import tensorflow as tf
 
 from . import Spy, Agent, model, config
 
-SCREENSHOT_SIZE = 480
-MONITOR = 1
-
 @click.group()
 def main():
     pass
@@ -30,8 +27,8 @@ def run(host: str, port: int, save_model: bool, restore_model: bool, save_episod
         print(f'gameon: {spy.playing}, score: {spy.score}, dir: {spy.direction}, pps: {spy.pps:.2f}')
         _q.put((event_type, value))
 
-    agent = Agent(SCREENSHOT_SIZE, SCREENSHOT_SIZE, 3)
-    spy = Spy.make_spy(host, port, MONITOR, spy_update_callback)
+    agent = Agent(config.params.image_size, config.params.image_size, 3)
+    spy = Spy.make_spy(host, port, config.monitor, spy_update_callback)
 
     done = False
     try:
@@ -45,7 +42,7 @@ def run(host: str, port: int, save_model: bool, restore_model: bool, save_episod
             agent.start_new_game()
 
             while spy.playing:
-                im = spy.screenshot(SCREENSHOT_SIZE)
+                im = spy.screenshot(config.params.image_size)
 
                 keydown = agent.feed(im)
 
