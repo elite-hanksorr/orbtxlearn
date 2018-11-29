@@ -1,4 +1,6 @@
+from abc import abstractmethod, ABC
 import socket
+import sys
 import threading
 import time
 from typing import Optional, Callable, Any, Tuple, Union
@@ -7,9 +9,16 @@ import mss
 import numpy as np
 import skimage.transform
 
+if sys.platform.startswith('linux'):
+    import xdo
+elif sys.platform == 'win32':
+    import ctypes
+else:
+    raise RuntimeError(f'Not implemented for platform {sys.platform} yet')
+
 __all__ = ['Spy']
 
-class Spy():
+class Spy(ABC):
     DIR_CW = -1
     DIR_CCW = 1
     DIR_UNINITIALIZED = 0
@@ -39,6 +48,14 @@ class Spy():
 
         self._read_thread = threading.Thread(target=self._read_loop, daemon=True)
         self._read_thread.start()
+
+    @abstractmethod
+    def keydown(self, key: str) -> None:
+        pass
+
+    @abstractmethod
+    def keyup(self, key: str) -> None:
+        pass
 
     def _send(self, data: str) -> None:
         with self._send_lock:
