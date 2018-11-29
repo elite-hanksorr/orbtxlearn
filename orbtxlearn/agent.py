@@ -71,13 +71,14 @@ class Agent():
         :param image: An np.ndarray of shape (height, width, channels)
         :returns: A float representing the probability that we should send OrbtXL a keydown'''
 
-        t = time.time() - self._start_time
+        start_time = time.time()
+        episode_time = start_time - self._start_time
         logits, softmax, action = self._sess.run([self._outputs['logits'], self._outputs['softmax'], self._outputs['action']], feed_dict={
             self._inputs['images']: image.reshape((1, self._height, self._width, self._channels))
         })
-        print(f'[{logits[0,0]:6.3f} {logits[0,1]:6.3f}] [{softmax[0,0]:6.3f} {softmax[0,1]:6.3f}] {action}')
+        print(f'[{logits[0,0]:6.3f} {logits[0,1]:6.3f}] [{softmax[0,0]:6.3f} {softmax[0,1]:6.3f}] {action} {1000*(time.time()-start_time):6.1f}ms')
         self._current_episode.append({
-            'time': t,
+            'time': episode_time,
             'image': image,
             'action': action,
             'reward': config.params.reward_nothing

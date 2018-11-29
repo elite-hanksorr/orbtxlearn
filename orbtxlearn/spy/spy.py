@@ -175,7 +175,7 @@ class Spy(ABC):
 
         t0 = time_captured - time_start
         t1 = time_resized - time_captured
-        print(f'capture: {1000*t0:6.1f}ms resize: {1000*t1:6.1f}ms', end=' ')
+        print(f'capture:{1000*t0:6.1f}ms resize:{1000*t1:6.1f}ms', end=' ')
         self._screenshot_latencies.append((t0, t1))
 
         return resized
