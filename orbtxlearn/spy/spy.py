@@ -156,7 +156,7 @@ class Spy(ABC):
 
         # Make square
         smaller = min(w, h)
-        im = im.crop(((h-smaller)//2, (w-smaller)//2, (h+smaller)//2, (w+smaller)//2))
+        im = im.crop(((w-smaller)//2, (h-smaller)//2, (w+smaller)//2, (h+smaller)//2))
         assert im.size[0] == im.size[1]
 
         # Resize
