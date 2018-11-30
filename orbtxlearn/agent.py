@@ -25,7 +25,14 @@ class Agent():
     ]
 
     def __init__(self, height: int, width: int, channels: int, save_episodes: bool = True):
-        '''Makes a game agent using make_model().'''
+        '''
+        Makes a game agent using make_model()
+
+        :param height: Height of screenshots
+        :param width: Width of screenshots
+        :param channels: Number of channels in screenshots
+        :save_episodes: Whether we should be saving observations to sqlite database
+        '''
 
         tf.reset_default_graph()
         config_proto = tf.ConfigProto()
@@ -59,7 +66,6 @@ class Agent():
         self._summaries: Dict[str, Any] = {}
         self._create_summaries()
 
-        self._all_summaries_op = tf.summary.merge_all()
         self._sess.run(tf.global_variables_initializer())
 
         self._file_writer.add_graph(self._sess.graph)
@@ -69,6 +75,7 @@ class Agent():
         self._current_episode: List[Dict[str, Any]] = []
         self._start_time = datetime.datetime.now()
 
+        # Run the model once to do optimizations
         self._sess.run(self._outputs['action'], feed_dict={
             self._inputs['images']: np.zeros([1, self._height, self._width, self._channels])
         })
