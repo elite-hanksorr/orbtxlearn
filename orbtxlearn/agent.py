@@ -203,7 +203,21 @@ class Agent():
             return self._current_episode[-1]['image'].reshape([1, config.params.image_size, config.params.image_size, 3])
         return np.zeros([1, config.params.image_size, config.params.image_size, 3])
 
-    def train(self, final_score: int, pps: float) -> None:
+    def report_game(self, final_score: int, pps: float) -> None:
+        summary, step = self._sess.run(
+            [tf.summary.merge_all(scope='game_stats'), tf.train.get_global_step()],
+            feed_dict={
+                self._summaries['rewards']: np.array([obs['reward'] for obs in self._current_episode]),
+                self._summaries['run_time']: self._get_run_time(),
+                self._summaries['final_score']: final_score,
+                self._summaries['points_per_second']: pps,
+                self._summaries['death_image']: self._get_death_image(),
+            })
+
+        self._file_writer.add_summary(summary, global_step=step)
+        self._file_writer.flush()
+
+    def train(self, epochs: int) -> None:
         memory_len = self._db_conn.execute('select count(*) as count from Observations').fetchone()['count']
         if not memory_len:
             print('No samples retrieved from database, not training')
@@ -211,54 +225,47 @@ class Agent():
 
         print(f'Training on {memory_len} samples...')
 
-        buckets: List[Dict[str, int]] = self._db_conn.execute(
-            '''
-            select round(reward, 1) as bin, count(*) as count
-            from Observations
-            group by bin
-            order by bin
-            ''').fetchall()
-        print(buckets)
+        # buckets: List[Dict[str, int]] = self._db_conn.execute(
+        #     '''
+        #     select round(reward, 1) as bin, count(*) as count
+        #     from Observations
+        #     group by bin
+        #     order by bin
+        #     ''').fetchall()
 
-        sample: List[Dict[str, Any]] = []
-        sizes = sorted(b['count'] for b in buckets)
-        min_size = sizes[len(sizes)//5] * 3 # Lowest quintile
-        print(f'Using minsize = {min_size}')
-        for bucket in buckets:
-            sample.extend(
-                self._db_conn.execute(
-                    '''
-                    select image, action, reward
-                    from Observations
-                    where round(reward, 1) = ?
-                    limit ?
-                    ''', (bucket['bin'], min(50, min_size))).fetchall())
-
-        print(f'Got {len(sample)} samples')
-        random.shuffle(sample)
+        # sizes = sorted(b['count'] for b in buckets)
+        # min_size = sizes[len(sizes)//5] * 3 # Lowest quintile
+        # print(f'Using minsize = {min_size}')
 
         training_summary = tf.summary.merge([
             tf.summary.merge_all(scope='train'),
-            tf.summary.merge_all(scope='model')
+            tf.summary.merge_all(scope='model(?!/conv_outputs)')
         ])
-        game_stats_summary = tf.summary.merge_all(scope='game_stats')
 
-        first_time = True
-        for row in sample:
-            if first_time:
-                summary, step = self._sess.run(
-                    [game_stats_summary, tf.train.get_global_step()],
-                    feed_dict={
-                        self._summaries['rewards']: np.array([obs['reward'] for obs in self._current_episode]),
-                        self._summaries['run_time']: self._get_run_time(),
-                        self._summaries['final_score']: final_score,
-                        self._summaries['points_per_second']: pps,
-                        self._summaries['death_image']: self._get_death_image(),
-                    })
+        while epochs > 0:
+            # sample: List[Dict[str, Any]] = []
+            # for bucket in buckets:
+            #     sample.extend(
+            #         self._db_conn.execute(
+            #             '''
+            #             select image, action, reward
+            #             from Observations
+            #             where round(reward, 1) = ?
+            #             limit ?
+            #             ''', (bucket['bin'], min(50, min_size))).fetchall())
 
-                self._file_writer.add_summary(summary, global_step=step)
-                first_time = False
+            sample = self._db_conn.execute(
+                '''
+                select image, action, reward
+                from Observations
+                where id in (select id from Observations order by random() limit ?)
+                ''', [100]).fetchall()
 
+            random.shuffle(sample)
+            print(f'Got {len(sample)} samples')
+
+            for i, row in enumerate(sample[:epochs]):
+                if i % 20 == 0:
             _, summary, step = self._sess.run(
                 [self._optim_outputs['optimizer'], training_summary, tf.train.get_global_step()],
                 feed_dict={
@@ -268,8 +275,17 @@ class Agent():
                 })
 
             self._file_writer.add_summary(summary, global_step=step)
+                else:
+                    self._sess.run(
+                        self._optim_outputs['optimizer'],
+                        feed_dict={
+                            self._inputs['images']: np.expand_dims(row['image'], 0),
+                            self._optim_inputs['actions']: np.expand_dims(row['action'], 0).astype(np.uint8),
+                            self._optim_inputs['rewards']: np.expand_dims(row['reward'], 0)
+                        })
 
         self._file_writer.flush()
+            epochs -= len(sample)
 
     def close(self) -> None:
         '''Close the tf.Session'''
