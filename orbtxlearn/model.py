@@ -3,7 +3,7 @@ import collections
 import logging
 import math
 import time
-from typing import Generator, List, Tuple, Dict, Union, NamedTuple, Any
+from typing import Generator, List, Tuple, Dict, Union, NamedTuple, Any, Optional, Callable
 
 import tensorflow as tf
 import numpy as np
@@ -20,6 +20,8 @@ CATEGORIES = {
     'keydown': 0,
     'keyup': 1
 }
+
+INITIALIZER = tf.initializers.glorot_normal()
 
 def in_variable_scope(*vscope_args, **vscope_kwargs):
     '''Decorate a function with this to wrap the body in tf.variable_scope'''
@@ -43,9 +45,33 @@ def in_name_scope(*nscope_args, **nscope_kwargs):
         return wrapped
     return wrapper
 
+@in_name_scope('fully_connected')
+def fully_connected(layer, size: int, activation_fn: Optional[Callable] = tf.nn.relu):
+    '''
+    Fully connected layer
+
+    :param layer: Input tensor of shape [batch_size, input_units]
+    :param size: Number of output units
+    :param activation_fn: Optional activation function
+    '''
+
+    kernel = tf.Variable(INITIALIZER([layer.shape.as_list()[1], size]), name='kernel')
+    bias = tf.Variable(INITIALIZER([size]), name='bias')
+
+    tf.summary.histogram('kernel', kernel)
+    tf.summary.histogram('bias', bias)
+
+    layer = layer @ kernel + bias
+    if activation_fn is not None:
+        layer = activation_fn(layer)
+
+    return layer
+
+
 @in_name_scope('conv2d')
 def conv2d(images, filter_size: int, strides: Union[int, List], depth: int, padding: str):
-    '''Convolutional layer.
+    '''
+    Convolutional layer.
 
     :param images: Tensor of shape [batch_size, height, width, in_channels]
     :param filter_size: Convolution filter size
@@ -61,10 +87,10 @@ def conv2d(images, filter_size: int, strides: Union[int, List], depth: int, padd
     else:
         strides = [1, strides, strides, 1]
 
-    filter = tf.Variable(tf.initializers.glorot_normal()([filter_size, filter_size, channels, depth]))
+    filter = tf.Variable(INITIALIZER([filter_size, filter_size, channels, depth]))
     tf.summary.histogram('filter', filter)
     conv = tf.nn.conv2d(images, filter, strides, padding=padding)
-    return tf.nn.leaky_relu(conv)
+    return tf.nn.relu(conv)
 
 @in_variable_scope('lstm', default_name='lstm', reuse=tf.AUTO_REUSE)
 def lstm(layer) -> Any:
@@ -95,33 +121,39 @@ def make_model(batches: int, height: int, width: int, channels: int) \
         layer = conv2d(layer, filter_size, stride, depth, padding)
         # print(f'pre_lstm_conv[{i}]: {layer.shape.as_list()}')
         layers['pre_lstm_conv'].append(layer)
-        tf.summary.image(f'conv{i}', tf.transpose(layer, [3, 1, 2, 0]), layer.shape.as_list()[3])  # Swap batch_size and channels
+
+    with tf.variable_scope('conv_outputs'):
+        for i, conv in enumerate(layers['pre_lstm_conv']):
+            tf.summary.image(f'conv{i}', tf.transpose(conv, [3, 1, 2, 0]), conv.shape.as_list()[3])  # Swap batch_size and channels
 
     layer = tf.reshape(layer, [batches, -1])
     for i, n in enumerate(config.params.pre_lstm_fc_nodes + [config.params.state_size]):
-        layer = tf.layers.dense(layer, n, kernel_initializer=tf.initializers.glorot_normal(), activation=tf.nn.leaky_relu)
+        layer = fully_connected(layer, n, activation_fn=tf.nn.relu)
         # print(f'pre_lstm_fc[{i}]: {layer.shape.as_list()}')
         layers['pre_lstm_fc'].append(layer)
         tf.summary.histogram(f'pre_lstm_fc{i}', layer)
 
     #layer = lstm(layer)
-    layer = tf.reshape(layer, [batches, -1])
+    #layer = tf.reshape(layer, [batches, -1])
     # print(f'state: {layer.shape.as_list()}')
-    layers['state'].append(layer)
-    tf.summary.histogram(f'state{i}', layer)
+    #layers['state'].append(layer)
+    #tf.summary.histogram(f'state{i}', layer)
 
     for i, n in enumerate(config.params.post_lstm_fc_nodes):
-        layer = tf.layers.dense(layer, n, kernel_initializer=tf.initializers.glorot_normal(), activation=tf.nn.leaky_relu)
+        layer = fully_connected(layer, 2, activation_fn=tf.nn.relu)
         # print(f'post_lstm_fc[{i+1}]: {layer.shape.as_list()}')
         layers['post_lstm_fc'].append(layer)
         tf.summary.histogram(f'post_lstm_fc{i}', layer)
 
-    logits = tf.identity(tf.layers.dense(layer, 2, kernel_initializer=tf.initializers.glorot_normal(), activation=None), name='logits')
+    # logits = tf.identity(tf.layers.dense(layer, 2, kernel_initializer=tf.initializers.glorot_normal(), activation=None), name='logits')
+    logits = tf.identity(fully_connected(layer, 2, activation_fn=None), name='logits')
     softmax = tf.nn.softmax(logits)
     action = tf.squeeze(tf.random.multinomial(logits, 1), name='action')
 
-    tf.summary.histogram('logits', logits)
-    tf.summary.histogram('softmax', softmax)
+    tf.summary.scalar('keydown_logit', logits[0,0])
+    tf.summary.scalar('keyup_logit', logits[0,1])
+    tf.summary.scalar('keydown_softmax', softmax[0,0])
+    tf.summary.scalar('action', action)
 
     return \
         ({
@@ -134,8 +166,8 @@ def make_model(batches: int, height: int, width: int, channels: int) \
         },
         {
             'pre_lstm_conv': layers['pre_lstm_conv'],
-            'pre_lstm_fc': layers['pre_lstm_fc'],
-            'state': layers['state'],
+            #'pre_lstm_fc': layers['pre_lstm_fc'],
+            #'state': layers['state'],
             'post_lstm_fc': layers['post_lstm_fc'],
         })
 
