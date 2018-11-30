@@ -14,14 +14,21 @@ from . import Spy, Agent, model, config
 def main():
     pass
 
-@main.command()
+@main.command('eval')
 @click.option('--host', type=str, default='localhost')
 @click.option('--port', type=int, default=2600)
-@click.option('--save-model', default=False, help='Save model checkpoints')
-@click.option('--restore-model', default=False, help='Restore model before training')
-@click.option('--save-episodes', default=False, help='Save episodes to disk')
-def run(host: str, port: int, save_model: bool, restore_model: bool, save_episodes:bool) -> None:
+def eval_cmd(host: str, port: int) -> None:
+    run(True, host, port)
 
+
+@main.command('collect')
+@click.option('--host', type=str, default='localhost')
+@click.option('--port', type=int, default=2600)
+def collect(host: str, port: int) -> None:
+    run(False, host, port)
+
+
+def run(eval_model: bool, host: str, port: int) -> None:
     _q: queue.Queue = queue.Queue()
     def spy_update_callback(event_type: str, value: Any, spy: Spy) -> None:
         print(f'gameon: {spy.playing}, score: {spy.score}, dir: {spy.direction}, pps: {spy.pps:.2f}')
@@ -40,11 +47,16 @@ def run(host: str, port: int, save_model: bool, restore_model: bool, save_episod
                 time.sleep(0.05)
 
             agent.start_new_game()
+            keydown_prob = random.random()*0.4 + 0.3
 
             while spy.playing:
                 im = spy.screenshot(config.params.image_size)
 
-                keydown = agent.feed(im)
+                if eval_model:
+                    keydown = agent.feed(im)
+                else:
+                    keydown = agent.collect(im, keydown_prob=keydown_prob)
+                    print()
 
                 if keydown:
                     spy.keydown()
@@ -63,13 +75,29 @@ def run(host: str, port: int, save_model: bool, restore_model: bool, save_episod
                     elif event_type == 'playing' and value == False:
                         spy.keyup()
                         agent.gameover()
-                        agent.train(spy.score, spy.pps)
+                        agent.report_game(spy.score, spy.pps)
 
             spy.round_reset()
 
     finally:
         print('Closing agent')
         agent.close()
+
+
+@main.command('train')
+@click.option('--save-model/--no-save-model', default=True, help='Save model checkpoints')
+@click.option('--restore-model/--no-restore-model', default=False, help='Restore model before training')
+@click.argument('epochs', type=int)
+def train(save_model: bool, restore_model: bool, epochs: int) -> None:
+    agent = Agent(config.params.image_size, config.params.image_size, 3)
+
+    if restore_model:
+        agent.restore()
+
+    agent.train(epochs)
+
+    if save_model:
+        agent.save()
 
 
 @main.command('model')

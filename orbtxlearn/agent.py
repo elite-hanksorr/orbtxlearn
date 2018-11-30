@@ -155,14 +155,14 @@ class Agent():
 
         return action == model.CATEGORIES['keydown']
 
-    def collect(self, image: np.ndarray) -> float:
+    def collect(self, image: np.ndarray, keydown_prob: float = 0.5) -> float:
         '''Collect a new observation, and choose a random action.
 
         :param image: An np.ndarray of shape (height, width, channels)
         :returns: A float representing the probability that we should send OrbtXL a keydown'''
 
         t = (datetime.datetime.now() - self._start_time).total_seconds()
-        action = random.randint(0, 1)
+        action = 1 if random.random() < keydown_prob else 0
         self._current_episode.append({
             'episode_time': t,
             'filename': None,
@@ -266,15 +266,15 @@ class Agent():
 
             for i, row in enumerate(sample[:epochs]):
                 if i % 20 == 0:
-            _, summary, step = self._sess.run(
-                [self._optim_outputs['optimizer'], training_summary, tf.train.get_global_step()],
-                feed_dict={
-                    self._inputs['images']: np.expand_dims(row['image'], 0),
-                    self._optim_inputs['actions']: np.expand_dims(row['action'], 0).astype(np.uint8),
-                    self._optim_inputs['rewards']: np.expand_dims(row['reward'], 0)
-                })
+                    _, summary, step = self._sess.run(
+                        [self._optim_outputs['optimizer'], training_summary, tf.train.get_global_step()],
+                        feed_dict={
+                            self._inputs['images']: np.expand_dims(row['image'], 0),
+                            self._optim_inputs['actions']: np.expand_dims(row['action'], 0).astype(np.uint8),
+                            self._optim_inputs['rewards']: np.expand_dims(row['reward'], 0)
+                        })
 
-            self._file_writer.add_summary(summary, global_step=step)
+                    self._file_writer.add_summary(summary, global_step=step)
                 else:
                     self._sess.run(
                         self._optim_outputs['optimizer'],
@@ -284,8 +284,16 @@ class Agent():
                             self._optim_inputs['rewards']: np.expand_dims(row['reward'], 0)
                         })
 
-        self._file_writer.flush()
+            self._file_writer.flush()
             epochs -= len(sample)
+
+    def save(self) -> None:
+        saver = tf.train.Saver(max_to_keep=config.training.max_checkpoints)
+        saver.save(self._sess, os.path.join(config.training.checkpoint_dir, 'model'))
+
+    def restore(self) -> None:
+        saver = tf.train.Saver()
+        saver.restore(self._sess, tf.train.latest_checkpoint(os.path.join(config.training.checkpoint_dir, 'model')))
 
     def close(self) -> None:
         '''Close the tf.Session'''

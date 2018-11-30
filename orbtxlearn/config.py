@@ -32,3 +32,5 @@ class training:
     learning_rate = 0.00005
     minimum_random_episodes = 4  # Minimum episodes to collect with random weights before we can train
     batch_size = 1
+    max_checkpoints = 10
+    checkpoint_dir = os.path.join('data', 'model')
