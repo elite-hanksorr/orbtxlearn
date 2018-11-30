@@ -6,6 +6,9 @@ def get_log_dir() -> str:
 
 monitor = 1  # TODO have user select this
 
+episodes_dir = os.path.join('data', 'memory')
+episode_strftime = '%Y-%m-%d_%H-%M-%S'
+
 class params:
     image_size = 228  # Width and height of screenshots
 

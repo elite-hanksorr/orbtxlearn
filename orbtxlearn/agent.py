@@ -1,13 +1,19 @@
+import datetime
+import os.path
 import random
+import sqlite3
 import time
 from typing import List, Union, Dict, Any, MutableSequence
 
-from . import model, config
+from . import model, config, util
 
 import numpy as np
 import pandas as pd
+from PIL import Image
 import tensorflow as tf
 import sortedcontainers
+
+util.sqlite_register_ndarray()
 
 class Agent():
     SUMMARIES = [
@@ -18,7 +24,7 @@ class Agent():
         ('death_image', tf.summary.image, tf.uint8, [1, config.params.image_size, config.params.image_size, 3]),
     ]
 
-    def __init__(self, height: int, width: int, channels: int):
+    def __init__(self, height: int, width: int, channels: int, save_episodes: bool = True):
         '''Makes a game agent using make_model().'''
 
         tf.reset_default_graph()
@@ -27,26 +33,41 @@ class Agent():
         self._sess = tf.Session(config=config_proto)
         self._file_writer = tf.summary.FileWriter(config.get_log_dir())
 
+        # FIXME should we really be referring to files outside the package?
+        self._db_conn = sqlite3.connect(os.path.join(config.episodes_dir, 'metadata.sqlite'), detect_types=sqlite3.PARSE_DECLTYPES)
+        self._db_conn.row_factory = util.dict_factory
+        with self._db_conn:
+            self._db_conn.execute(
+                '''
+                create table if not exists Observations (
+                    id integer primary key autoincrement,
+                    filename text not null,
+                    episode_time real not null,
+                    image ndarray not null,
+                    action integer not null,
+                    reward real not null
+                )
+                ''')
+
         self._height = height
         self._width = width
         self._channels = channels
 
         self._inputs, self._outputs, self._layers = model.make_model(1, height, width, channels)
-        self._o_inputs, self._o_outputs, _ = model.make_optimizer(1, self._outputs['logits'])
+        self._optim_inputs, self._optim_outputs, _ = model.make_optimizer(1, self._outputs['logits'])
 
         self._summaries: Dict[str, Any] = {}
         self._create_summaries()
 
-        self._summaries_op = tf.summary.merge_all()
+        self._all_summaries_op = tf.summary.merge_all()
         self._sess.run(tf.global_variables_initializer())
 
         self._file_writer.add_graph(self._sess.graph)
         self._file_writer.flush()
 
+        self._saving_episodes = save_episodes
         self._current_episode: List[Dict[str, Any]] = []
-        self._episodes: List[pd.DataFrame] = []
-        self._memory: pd.DataFrame = pd.DataFrame({'time': [], 'image': [], 'action': [], 'reward': []})
-        self._start_time = time.time()
+        self._start_time = datetime.datetime.now()
 
         self._sess.run(self._outputs['action'], feed_dict={
             self._inputs['images']: np.zeros([1, self._height, self._width, self._channels])
@@ -54,15 +75,48 @@ class Agent():
         print('Ready!')
 
     def _create_summaries(self) -> None:
-        for name, summary_fun, dtype, shape in Agent.SUMMARIES:
-            self._summaries[name] = tf.placeholder(dtype, shape, name=f'{name}_summary__placeholder')
-            summary_fun(name, self._summaries[name], family='game_stats')
+        with tf.variable_scope('game_stats'):
+            for name, summary_fun, dtype, shape in Agent.SUMMARIES:
+                self._summaries[name] = tf.placeholder(dtype, shape, name=f'{name}_summary_placeholder')
+                summary_fun(name, self._summaries[name])
+
+    def _save_episode(self, episode: List[Dict[str, Any]]) -> None:
+        print('Saving episode to database...')
+
+        timestr = self._start_time.strftime(config.episode_strftime)
+
+        # Make new directory
+        i = 0
+        while True:
+            try:
+                if i == 0:
+                    dirname = os.path.join(config.episodes_dir, timestr)
+                else:
+                    dirname = os.path.join(config.episodes_dir, timestr + f'_{i}')
+
+                os.mkdir(dirname)
+            except FileExistsError:
+                i += 1
+            else:
+                break
+
+        for i, obs in enumerate(self._current_episode):
+            obs['filename'] = os.path.join(dirname, f'{i:05}.png')
+            Image.fromarray(obs['image'], mode='RGB').save(obs['filename'])
+
+        with self._db_conn:
+            self._db_conn.executemany(
+                '''
+                insert into Observations (episode_time, filename, image, action, reward)
+                values (:episode_time, :filename, :image, :action, :reward)
+                ''', self._current_episode)
+
 
     def randomize_model(self) -> None:
         self._sess.run(tf.global_variables_initializer())
 
     def start_new_game(self) -> None:
-        self._start_time = time.time()
+        self._start_time = datetime.datetime.now()
         self._current_episode = []
 
     def feed(self, image: np.ndarray) -> float:
@@ -72,13 +126,21 @@ class Agent():
         :returns: A float representing the probability that we should send OrbtXL a keydown'''
 
         start_time = time.time()
-        episode_time = start_time - self._start_time
+        episode_time = (datetime.datetime.now() - self._start_time).total_seconds()
         logits, softmax, action = self._sess.run([self._outputs['logits'], self._outputs['softmax'], self._outputs['action']], feed_dict={
             self._inputs['images']: image.reshape((1, self._height, self._width, self._channels))
         })
+        elapsed = time.time() - start_time
+
+        action = int(action)
+        if random.random() < config.params.explore_rate:
+            action = random.randint(0, 1)
+
         print(f'[{logits[0,0]:6.3f} {logits[0,1]:6.3f}] [{softmax[0,0]:6.3f} {softmax[0,1]:6.3f}] {action} {1000*(time.time()-start_time):6.1f}ms')
+
         self._current_episode.append({
-            'time': episode_time,
+            'episode_time': episode_time,
+            'filename': None,
             'image': image,
             'action': action,
             'reward': config.params.reward_nothing
@@ -92,10 +154,11 @@ class Agent():
         :param image: An np.ndarray of shape (height, width, channels)
         :returns: A float representing the probability that we should send OrbtXL a keydown'''
 
-        t = time.time() - self._start_time
-        action = random.choice([0, 1])
+        t = (datetime.datetime.now() - self._start_time).total_seconds()
+        action = random.randint(0, 1)
         self._current_episode.append({
-            'time': t,
+            'episode_time': t,
+            'filename': None,
             'image': image,
             'action': action,
             'reward': config.params.reward_nothing
@@ -120,12 +183,12 @@ class Agent():
                 g = g * discount + observation['reward']
                 observation['reward'] = g
 
-            self._episodes.append(self._current_episode)
-            self._memory = self._memory.append(self._current_episode, ignore_index=True)
+            if self._saving_episodes:
+                self._save_episode(self._current_episode)
 
     def _get_run_time(self) -> float:
         if self._current_episode:
-            return self._current_episode[-1]['time'] - self._current_episode[0]['time']
+            return self._current_episode[-1]['episode_time'] - self._current_episode[0]['episode_time']
         return 0
 
     def _get_death_image(self) -> np.ndarray:
@@ -134,51 +197,72 @@ class Agent():
         return np.zeros([1, config.params.image_size, config.params.image_size, 3])
 
     def train(self, final_score: int, pps: float) -> None:
-        if self._memory.empty:
+        memory_len = self._db_conn.execute('select count(*) as count from Observations').fetchone()['count']
+        if not memory_len:
+            print('No samples retrieved from database, not training')
             return
 
-        print(f'Training on {len(self._episodes)} episodes...')
+        print(f'Training on {memory_len} samples...')
 
-        bins = np.arange(config.params.reward_death-5.1, config.params.reward_score+5.1, 1.0)
-        reward_buckets = self._memory.groupby(pd.cut(self._memory['reward'], bins)).groups
-        print({k: len(v) for k,v in reward_buckets.items()})
+        buckets: List[Dict[str, int]] = self._db_conn.execute(
+            '''
+            select round(reward, 1) as bin, count(*) as count
+            from Observations
+            group by bin
+            order by bin
+            ''').fetchall()
+        print(buckets)
 
-        sample = pd.DataFrame()
-        min_size = len(min((i for i in reward_buckets.values() if not i.empty), key=len, default=[]))
-        for bucket in reward_buckets.values():
-            pop = self._memory.loc[bucket]
-            if pop.empty:
-                continue
-
-            sample = sample.append(pop.sample(min(50, min(min_size, len(pop)))))
+        sample: List[Dict[str, Any]] = []
+        sizes = sorted(b['count'] for b in buckets)
+        min_size = sizes[len(sizes)//5] * 3 # Lowest quintile
+        print(f'Using minsize = {min_size}')
+        for bucket in buckets:
+            sample.extend(
+                self._db_conn.execute(
+                    '''
+                    select image, action, reward
+                    from Observations
+                    where round(reward, 1) = ?
+                    limit ?
+                    ''', (bucket['bin'], min(50, min_size))).fetchall())
 
         print(f'Got {len(sample)} samples')
+        random.shuffle(sample)
+
+        training_summary = tf.summary.merge([
+            tf.summary.merge_all(scope='train'),
+            tf.summary.merge_all(scope='model')
+        ])
+        game_stats_summary = tf.summary.merge_all(scope='game_stats')
 
         first_time = True
-        for _, row in sample.sample(frac=1).iterrows():
+        for row in sample:
             if first_time:
-                print('Dumping summaries for this batch...')
-                summaries, step = self._sess.run([self._summaries_op, tf.train.get_global_step()], feed_dict={
-                    self._summaries['rewards']: np.array([obs['reward'] for obs in self._current_episode]),
-                    self._summaries['run_time']: self._get_run_time(),
-                    self._summaries['final_score']: final_score,
-                    self._summaries['points_per_second']: pps,
-                    self._summaries['death_image']: self._get_death_image(),
-                    self._inputs['images']: np.expand_dims(np.array(row['image']), 0),
-                    self._o_inputs['actions']: np.expand_dims(row['action'], 0).astype(np.uint8),
-                    self._o_inputs['rewards']: np.expand_dims(row['reward'], 0)
-                })
-                self._file_writer.add_summary(summaries, global_step=step)
-                self._file_writer.flush()
-                print('Summaries done, continuing training...')
-            else:
-                self._sess.run(self._o_outputs['optimizer'], feed_dict={
-                    self._inputs['images']: np.expand_dims(np.array(row['image']), 0),
-                    self._o_inputs['actions']: np.expand_dims(row['action'], 0).astype(np.uint8),
-                    self._o_inputs['rewards']: np.expand_dims(row['reward'], 0)
+                summary, step = self._sess.run(
+                    [game_stats_summary, tf.train.get_global_step()],
+                    feed_dict={
+                        self._summaries['rewards']: np.array([obs['reward'] for obs in self._current_episode]),
+                        self._summaries['run_time']: self._get_run_time(),
+                        self._summaries['final_score']: final_score,
+                        self._summaries['points_per_second']: pps,
+                        self._summaries['death_image']: self._get_death_image(),
+                    })
+
+                self._file_writer.add_summary(summary, global_step=step)
+                first_time = False
+
+            _, summary, step = self._sess.run(
+                [self._optim_outputs['optimizer'], training_summary, tf.train.get_global_step()],
+                feed_dict={
+                    self._inputs['images']: np.expand_dims(row['image'], 0),
+                    self._optim_inputs['actions']: np.expand_dims(row['action'], 0).astype(np.uint8),
+                    self._optim_inputs['rewards']: np.expand_dims(row['reward'], 0)
                 })
 
-            first_time = False
+            self._file_writer.add_summary(summary, global_step=step)
+
+        self._file_writer.flush()
 
     def close(self) -> None:
         '''Close the tf.Session'''
