@@ -10,7 +10,7 @@ episodes_dir = os.path.join('data', 'memory')
 episode_strftime = '%Y-%m-%d_%H-%M-%S'
 
 class params:
-    image_size = 225  # Width and height of screenshots
+    image_size = 480  # Width and height of screenshots
 
     explore_rate = 0.40  # Probability of ignoring model and choosing a random action
 
@@ -22,15 +22,16 @@ class params:
     # [(filter_size, stride_size, output_depth)]
     pre_lstm_conv_layers = [
         (8, 4, 16, 'VALID'),
-        (4, 2, 32, 'VALID')
+        (5, 2, 24, 'VALID'),
+        (5, 2, 32, 'VALID')
     ]
-    pre_lstm_fc_nodes = []
-    state_size = 256
+    pre_lstm_fc_nodes = [1024]
+    state_size = 256  # Size of LSTM. 0 for no LSTM
     post_lstm_fc_nodes = []
 
 class training:
     learning_rate = 0.00005
-    minimum_random_episodes = 4  # Minimum episodes to collect with random weights before we can train
+    minimum_random_episodes = 5  # Minimum episodes to collect with random weights before we can train
     batch_size = 1
     max_checkpoints = 10
     checkpoint_dir = os.path.join('data', 'model')
