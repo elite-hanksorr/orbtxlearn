@@ -8,10 +8,8 @@ from typing import List, Union, Dict, Any, MutableSequence
 from . import model, config, util
 
 import numpy as np
-import pandas as pd
 from PIL import Image
 import tensorflow as tf
-import sortedcontainers
 
 util.sqlite_register_ndarray()
 
