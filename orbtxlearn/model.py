@@ -62,6 +62,7 @@ def conv2d(images, filter_size: int, strides: Union[int, List], depth: int, padd
         strides = [1, strides, strides, 1]
 
     filter = tf.Variable(tf.initializers.glorot_normal()([filter_size, filter_size, channels, depth]))
+    tf.summary.histogram('filter', filter)
     conv = tf.nn.conv2d(images, filter, strides, padding=padding)
     return tf.nn.leaky_relu(conv)
 
@@ -82,6 +83,7 @@ def lstm(layer) -> Any:
     with tf.control_dependencies([tf.assign(state_var, new_state) for state_var,new_state in zip(state_vars, new_states)]):
         return tf.identity(output)
 
+@in_variable_scope('model')
 def make_model(batches: int, height: int, width: int, channels: int) \
     -> Tuple[Dict[str, List[tf.Variable]], Dict[str, List[tf.Variable]], Dict[str, List[tf.Variable]]]:
 
@@ -100,21 +102,26 @@ def make_model(batches: int, height: int, width: int, channels: int) \
         layer = tf.layers.dense(layer, n, kernel_initializer=tf.initializers.glorot_normal(), activation=tf.nn.leaky_relu)
         # print(f'pre_lstm_fc[{i}]: {layer.shape.as_list()}')
         layers['pre_lstm_fc'].append(layer)
+        tf.summary.histogram(f'pre_lstm_fc{i}', layer)
 
     #layer = lstm(layer)
+    layer = tf.reshape(layer, [batches, -1])
     # print(f'state: {layer.shape.as_list()}')
     layers['state'].append(layer)
-
-    layer = tf.reshape(layer, [batches, -1])
+    tf.summary.histogram(f'state{i}', layer)
 
     for i, n in enumerate(config.params.post_lstm_fc_nodes):
         layer = tf.layers.dense(layer, n, kernel_initializer=tf.initializers.glorot_normal(), activation=tf.nn.leaky_relu)
-        layers['post_lstm_fc'].append(layer)
         # print(f'post_lstm_fc[{i+1}]: {layer.shape.as_list()}')
+        layers['post_lstm_fc'].append(layer)
+        tf.summary.histogram(f'post_lstm_fc{i}', layer)
 
     logits = tf.identity(tf.layers.dense(layer, 2, kernel_initializer=tf.initializers.glorot_normal(), activation=None), name='logits')
     softmax = tf.nn.softmax(logits)
     action = tf.squeeze(tf.random.multinomial(logits, 1), name='action')
+
+    tf.summary.histogram('logits', logits)
+    tf.summary.histogram('softmax', softmax)
 
     return \
         ({
@@ -144,9 +151,10 @@ def make_optimizer(batches: int, logits_layer):
     rmsprop = tf.train.RMSPropOptimizer(config.training.learning_rate)
     optimizer = rmsprop.minimize(loss, global_step=tf.train.get_or_create_global_step())
 
-    tf.summary.histogram('cross_entropies', cross_entropies)
-    tf.summary.histogram('rewards', rewards)
-    tf.summary.scalar('loss', loss)
+    summaries = []
+    summaries.append(tf.summary.histogram('cross_entropies', cross_entropies))
+    summaries.append(tf.summary.histogram('rewards', rewards))
+    summaries.append(tf.summary.scalar('loss', loss))
 
     return \
         ({
@@ -155,7 +163,8 @@ def make_optimizer(batches: int, logits_layer):
         },
         {
             'loss': loss,
-            'optimizer': optimizer
+            'optimizer': optimizer,
+            'summaries': tf.summary.merge(summaries),
         },
         {
         })
