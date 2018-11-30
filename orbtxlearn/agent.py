@@ -217,7 +217,7 @@ class Agent():
         self._file_writer.add_summary(summary, global_step=step)
         self._file_writer.flush()
 
-    def train(self, epochs: int) -> None:
+    def train(self, epochs: int, save_checkpoints: bool = True) -> None:
         memory_len = self._db_conn.execute('select count(*) as count from Observations').fetchone()['count']
         if not memory_len:
             print('No samples retrieved from database, not training')
@@ -242,6 +242,8 @@ class Agent():
             tf.summary.merge_all(scope='model(?!/conv_outputs)')
         ])
 
+        saver = tf.train.Saver(max_to_keep=config.training.max_checkpoints)
+        step = self._sess.run(tf.train.get_global_step())
         while epochs > 0:
             # sample: List[Dict[str, Any]] = []
             # for bucket in buckets:
@@ -264,8 +266,8 @@ class Agent():
             random.shuffle(sample)
             print(f'Got {len(sample)} samples')
 
-            for i, row in enumerate(sample[:epochs]):
-                if i % 20 == 0:
+            for row in sample[:epochs]:
+                if step % 20 == 0:
                     _, summary, step = self._sess.run(
                         [self._optim_outputs['optimizer'], training_summary, tf.train.get_global_step()],
                         feed_dict={
@@ -276,20 +278,21 @@ class Agent():
 
                     self._file_writer.add_summary(summary, global_step=step)
                 else:
-                    self._sess.run(
-                        self._optim_outputs['optimizer'],
+                    _, step = self._sess.run(
+                        [self._optim_outputs['optimizer'], tf.train.get_global_step()],
                         feed_dict={
                             self._inputs['images']: np.expand_dims(row['image'], 0),
                             self._optim_inputs['actions']: np.expand_dims(row['action'], 0).astype(np.uint8),
                             self._optim_inputs['rewards']: np.expand_dims(row['reward'], 0)
                         })
 
+                if step % 500 == 0:
+                    saver.save(self._sess, os.path.join(config.training.checkpoint_dir, 'model'), step)
+
             self._file_writer.flush()
             epochs -= len(sample)
 
-    def save(self) -> None:
-        saver = tf.train.Saver(max_to_keep=config.training.max_checkpoints)
-        saver.save(self._sess, os.path.join(config.training.checkpoint_dir, 'model'))
+        saver.save(self._sess, os.path.join(config.training.checkpoint_dir, 'model'), step)
 
     def restore(self) -> None:
         saver = tf.train.Saver()
