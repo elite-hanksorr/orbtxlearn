@@ -114,6 +114,7 @@ def make_model(batches: int, height: int, width: int, channels: int) \
     -> Tuple[Dict[str, List[tf.Variable]], Dict[str, List[tf.Variable]], Dict[str, List[tf.Variable]]]:
 
     images = tf.placeholder(tf.float32, [batches, height, width, channels], name='images')
+    tf.summary.image('image', images)  # Swap batch_size and channels
     layer = images / 256
     layers: Dict[str, List] = collections.defaultdict(list)
 

@@ -132,10 +132,12 @@ class Agent():
 
         start_time = time.time()
         episode_time = (datetime.datetime.now() - self._start_time).total_seconds()
-        logits, softmax, action = self._sess.run([self._outputs['logits'], self._outputs['softmax'], self._outputs['action']], feed_dict={
+        step = tf.train.get_or_create_global_step()
+        logits, softmax, action, summary, _, step = self._sess.run([self._outputs['logits'], self._outputs['softmax'], self._outputs['action'], tf.summary.merge_all(scope='model/conv_outputs'), tf.assign(step, step+1), step], feed_dict={
             self._inputs['images']: image.reshape((1, self._height, self._width, self._channels))
         })
         elapsed = time.time() - start_time
+        self._file_writer.add_summary(summary, global_step=step)
 
         action = int(action)
         if random.random() < config.params.explore_rate:
@@ -291,7 +293,7 @@ class Agent():
 
     def restore(self) -> None:
         saver = tf.train.Saver()
-        saver.restore(self._sess, tf.train.latest_checkpoint(os.path.join(config.training.checkpoint_dir, 'model')))
+        saver.restore(self._sess, tf.train.latest_checkpoint(os.path.join(config.training.checkpoint_dir)))
 
     def close(self) -> None:
         '''Close the tf.Session'''
