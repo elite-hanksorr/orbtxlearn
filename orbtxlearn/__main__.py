@@ -17,27 +17,24 @@ def main():
     os.makedirs(config.episodes_dir, exist_ok=True)
     os.makedirs(config.training.checkpoint_dir, exist_ok=True)
 
-@main.command('eval')
+@main.command('run')
 @click.option('--host', type=str, default='localhost')
 @click.option('--port', type=int, default=2600)
-def eval_cmd(host: str, port: int) -> None:
-    run(True, host, port)
+@click.option('--model/--no-model', default=False, help='Wether to use the model, or guess randomly')
+@click.option('--restore-model/--no-restore-model', default=False, help='Restore model before running')
+def run(host: str, port: int, model: bool, restore_model: bool) -> None:
+    if restore_model and not model:
+        raise click.UsageError('Cannot specify --restore-model without --model')
 
-
-@main.command('collect')
-@click.option('--host', type=str, default='localhost')
-@click.option('--port', type=int, default=2600)
-def collect(host: str, port: int) -> None:
-    run(False, host, port)
-
-
-def run(eval_model: bool, host: str, port: int) -> None:
     _q: queue.Queue = queue.Queue()
     def spy_update_callback(event_type: str, value: Any, spy: Spy) -> None:
         print(f'gameon: {spy.playing}, score: {spy.score}, dir: {spy.direction}, pps: {spy.pps:.2f}')
         _q.put((event_type, value))
 
     agent = Agent(config.params.image_size, config.params.image_size, 3)
+    if model and restore_model:
+        agent.restore()
+
     spy = Spy.make_spy(host, port, config.monitor, spy_update_callback)
 
     done = False
@@ -55,7 +52,7 @@ def run(eval_model: bool, host: str, port: int) -> None:
             while spy.playing:
                 im = spy.screenshot(config.params.image_size)
 
-                if eval_model:
+                if model:
                     keydown = agent.feed(im)
                 else:
                     keydown = agent.collect(im, keydown_prob=keydown_prob)
