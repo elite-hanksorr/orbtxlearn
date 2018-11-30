@@ -141,8 +141,8 @@ def make_optimizer(batches: int, logits_layer):
 
     cross_entropies = tf.losses.softmax_cross_entropy(onehot_labels=one_hot, logits=logits_layer)
     loss = tf.reduce_sum(rewards * cross_entropies)
-    adam = tf.train.AdamOptimizer(config.training.learning_rate)
-    optimizer = adam.minimize(loss, global_step=tf.train.get_or_create_global_step())
+    rmsprop = tf.train.RMSPropOptimizer(config.training.learning_rate)
+    optimizer = rmsprop.minimize(loss, global_step=tf.train.get_or_create_global_step())
 
     tf.summary.histogram('cross_entropies', cross_entropies)
     tf.summary.histogram('rewards', rewards)
