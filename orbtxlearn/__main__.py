@@ -85,19 +85,15 @@ def run(host: str, port: int, model: bool, restore_model: bool) -> None:
 
 
 @main.command('train')
-@click.option('--save-model/--no-save-model', default=True, help='Save model checkpoints')
 @click.option('--restore-model/--no-restore-model', default=False, help='Restore model before training')
 @click.argument('epochs', type=int)
-def train(save_model: bool, restore_model: bool, epochs: int) -> None:
+def train(restore_model: bool, epochs: int) -> None:
     agent = Agent(config.params.image_size, config.params.image_size, 3)
 
     if restore_model:
         agent.restore()
 
     agent.train(epochs)
-
-    if save_model:
-        agent.save()
 
 
 @main.command('model')
