@@ -1,3 +1,4 @@
+import os
 import queue
 import random
 import sys
@@ -12,7 +13,9 @@ from . import Spy, Agent, model, config
 
 @click.group()
 def main():
-    pass
+    os.makedirs(config._log_dir, exist_ok=True)
+    os.makedirs(config.episodes_dir, exist_ok=True)
+    os.makedirs(config.training.checkpoint_dir, exist_ok=True)
 
 @main.command('eval')
 @click.option('--host', type=str, default='localhost')

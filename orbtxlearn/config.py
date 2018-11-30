@@ -1,8 +1,10 @@
 import datetime
 import os.path
 
+_log_dir = os.path.join('data', 'tf_logs')
+
 def get_log_dir() -> str:
-    return os.path.join('tf_logs', datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
+    return os.path.join(_log_dir, datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
 
 monitor = 1  # TODO have user select this
 
