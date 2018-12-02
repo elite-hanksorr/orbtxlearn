@@ -60,8 +60,8 @@ class Agent():
         self._width = width
         self._channels = channels
 
-        self._inputs, self._outputs, self._layers = model.make_model(1, height, width, channels)
-        self._optim_inputs, self._optim_outputs, _ = model.make_optimizer(1, self._outputs['logits'])
+        self._inputs, self._outputs, self._layers = model.make_model(height, width, channels)
+        self._optim_inputs, self._optim_outputs, _ = model.make_optimizer(self._outputs['logits'])
 
         self._summaries: Dict[str, Any] = {}
         self._create_summaries()

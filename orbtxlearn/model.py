@@ -80,7 +80,7 @@ def conv2d(images, filter_size: int, strides: Union[int, List], depth: int, padd
     :param padding: Which padding to use. 'SAME' or 'VALID'
     '''
 
-    _, _, _, channels = images.shape.as_list()
+    channels = images.shape.as_list()[3]
 
     if isinstance(strides, (list, tuple, np.ndarray)):
         strides = [1, strides[0], strides[1], 1]
@@ -105,7 +105,7 @@ def lstm(layer) -> Any:
 
     :param layer: A tensor. The size of the LSTM is the size of this tensor'''
 
-    layer = tf.reshape(layer, [1, -1])
+    layer = tf.expand_dims(layer, 0)
     n = layer.shape.as_list()[1]
 
     cell = tf.contrib.rnn.LSTMBlockCell(n, use_peephole=True)
@@ -117,11 +117,11 @@ def lstm(layer) -> Any:
         return tf.identity(output)
 
 @in_variable_scope('model')
-def make_model(batches: int, height: int, width: int, channels: int) \
+def make_model(height: int, width: int, channels: int) \
     -> Tuple[Dict[str, List[tf.Variable]], Dict[str, List[tf.Variable]], Dict[str, List[tf.Variable]]]:
+    print('Building model...')
 
-    images = tf.placeholder(tf.float32, [batches, height, width, channels], name='images')
-    tf.summary.image('image', images)  # Swap batch_size and channels
+    images = tf.placeholder(tf.float32, [None, height, width, channels], name='images')
     layer = images / 256
     layers: Dict[str, List] = collections.defaultdict(list)
 
@@ -130,38 +130,44 @@ def make_model(batches: int, height: int, width: int, channels: int) \
         # print(f'pre_lstm_conv[{i}]: {layer.shape.as_list()}')
         layers['pre_lstm_conv'].append(layer)
 
-    with tf.variable_scope('conv_outputs'):
-        for i, conv in enumerate(layers['pre_lstm_conv']):
-            tf.summary.image(f'conv{i}', tf.transpose(conv, [3, 1, 2, 0]), conv.shape.as_list()[3])  # Swap batch_size and channels
-
-    layer = tf.reshape(layer, [batches, -1])
+    layer = tf.reshape(layer, [-1, np.prod(layer.shape.as_list()[1:])])
     for i, n in enumerate(config.params.pre_lstm_fc_nodes + [config.params.state_size]):
         layer = fully_connected(layer, n, activation_fn=tf.nn.relu)
         # print(f'pre_lstm_fc[{i}]: {layer.shape.as_list()}')
         layers['pre_lstm_fc'].append(layer)
-        tf.summary.histogram(f'pre_lstm_fc{i}', layer)
 
     #layer = lstm(layer)
     #layer = tf.reshape(layer, [batches, -1])
     # print(f'state: {layer.shape.as_list()}')
     #layers['state'].append(layer)
-    #tf.summary.histogram(f'state{i}', layer)
+    #tf.summary.histogram(f'state{i}', layer, family='layers)
 
     for i, n in enumerate(config.params.post_lstm_fc_nodes):
         layer = fully_connected(layer, 2, activation_fn=tf.nn.relu)
         # print(f'post_lstm_fc[{i+1}]: {layer.shape.as_list()}')
         layers['post_lstm_fc'].append(layer)
-        tf.summary.histogram(f'post_lstm_fc{i}', layer)
 
     # logits = tf.identity(tf.layers.dense(layer, 2, kernel_initializer=tf.initializers.glorot_normal(), activation=None), name='logits')
     logits = tf.identity(fully_connected(layer, 2, activation_fn=None), name='logits')
     softmax = tf.nn.softmax(logits)
     action = tf.squeeze(tf.random.multinomial(logits, 1), name='action')
 
-    tf.summary.scalar('keydown_logit', logits[0,0])
-    tf.summary.scalar('keyup_logit', logits[0,1])
-    tf.summary.scalar('keydown_softmax', softmax[0,0])
-    tf.summary.scalar('action', action)
+    with tf.variable_scope('summary'):
+        tf.summary.image('image', tf.expand_dims(images[0], 0), max_outputs=1, family='inputs')
+
+        with tf.variable_scope('conv'):
+            for i, conv in enumerate(layers['pre_lstm_conv']):
+                transposed = tf.transpose(conv[0:1], [3, 1, 2, 0])  # batch <- channels, channels <- 1
+                tf.summary.image(f'conv{i}', transposed, transposed.shape.as_list()[0], family='layers')
+
+        for layer_type in ['pre_lstm_fc', 'post_lstm_fc']:
+            for i, l in enumerate(layers[layer_type]):
+                tf.summary.histogram(f'{layer_type}_{i}', tf.identity(l), family='layers')
+
+        tf.summary.scalar('keydown_logit', logits[0,0], family='outputs')
+        tf.summary.scalar('keyup_logit', logits[0,1], family='outputs')
+        tf.summary.scalar('keydown_softmax', softmax[0,0], family='outputs')
+        tf.summary.scalar('action', action[0], family='outputs')
 
     return \
         ({
@@ -180,19 +186,27 @@ def make_model(batches: int, height: int, width: int, channels: int) \
         })
 
 @in_name_scope('train')
+def make_optimizer(logits_layer):
     print('Building optimizer...')
 
-    one_hot = tf.one_hot(tf.reshape(actions, [batches]), 2)
+    actions = tf.placeholder(tf.int32, shape=[None], name='actions_placeholder')
+    rewards = tf.placeholder(tf.float32, shape=[None], name='rewards_placeholder')
 
-    cross_entropies = tf.losses.softmax_cross_entropy(onehot_labels=one_hot, logits=logits_layer)
-    loss = tf.reduce_sum(rewards * cross_entropies)
-    rmsprop = tf.train.RMSPropOptimizer(config.training.learning_rate)
-    optimizer = rmsprop.minimize(loss, global_step=tf.train.get_or_create_global_step())
+    one_hot = tf.one_hot(actions, 2)
+    assigned_rewards = one_hot * tf.expand_dims(rewards, -1) + (1-one_hot) * config.params.rewards['nothing']
+    loss = tf.reduce_mean((assigned_rewards - logits_layer)**2)
 
-    summaries = []
-    summaries.append(tf.summary.histogram('cross_entropies', cross_entropies))
-    summaries.append(tf.summary.histogram('rewards', rewards))
-    summaries.append(tf.summary.scalar('loss', loss))
+    # cross_entropies = tf.losses.softmax_cross_entropy(onehot_labels=one_hot, logits=logits_layer)
+    # loss = tf.reduce_sum(rewards * cross_entropies)
+    optimizer = tf.train.RMSPropOptimizer(config.training.learning_rate) \
+        .minimize(loss, global_step=tf.train.get_or_create_global_step())
+
+    with tf.name_scope('summary'):
+        summary = tf.summary.merge([
+            # tf.summary.histogram('cross_entropies', cross_entropies, family='train'),
+            tf.summary.histogram('rewards', rewards[0], family='train'),
+            tf.summary.scalar('loss', tf.identity(loss), family='train'),
+        ])
 
     return \
         ({
@@ -202,7 +216,7 @@ def make_model(batches: int, height: int, width: int, channels: int) \
         {
             'loss': loss,
             'optimizer': optimizer,
-            'summaries': tf.summary.merge(summaries),
+            'summary': summary,
         },
         {
         })
