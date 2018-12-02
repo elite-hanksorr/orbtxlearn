@@ -9,6 +9,13 @@ import click
 import numpy as np
 import tensorflow as tf
 
+try:
+    import ipdb
+except ImportError:
+    import pdb
+else:
+    pdb = ipdb
+
 from . import Spy, Agent, model, config
 
 @click.group()
@@ -78,6 +85,11 @@ def run(host: str, port: int, model: bool, restore_model: bool) -> None:
                         agent.report_game(spy.score, spy.pps)
 
             spy.round_reset()
+
+    except Exception:
+        _, _, tb = sys.exc_info()
+        # pdb.post_mortem(tb)
+        raise
 
     finally:
         print('Closing agent')
