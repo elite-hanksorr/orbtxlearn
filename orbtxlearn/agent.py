@@ -22,10 +22,11 @@ class Agent():
         ('death_image', tf.summary.image, tf.uint8, [1, config.params.image_size, config.params.image_size, 3]),
     ]
 
-    def __init__(self, height: int, width: int, channels: int, save_episodes: bool = True):
+    def __init__(self, run_type: str, height: int, width: int, channels: int, save_episodes: bool = True):
         '''
         Makes a game agent using make_model()
 
+        :param run_type: 'train', 'run', or 'test'
         :param height: Height of screenshots
         :param width: Width of screenshots
         :param channels: Number of channels in screenshots
@@ -36,7 +37,8 @@ class Agent():
         config_proto = tf.ConfigProto()
         config_proto.gpu_options.allow_growth = True
         self._sess = tf.Session(config=config_proto)
-        self._file_writer = tf.summary.FileWriter(config.get_log_dir())
+        self._log_dir = config.get_run_log_dir(run_type)
+        self._file_writer = tf.summary.FileWriter(self._log_dir)
 
         # FIXME should we really be referring to files outside the package?
         self._db_conn = sqlite3.connect(os.path.join(config.episodes_dir, 'metadata.sqlite'), detect_types=sqlite3.PARSE_DECLTYPES)
@@ -314,8 +316,9 @@ class Agent():
         saver.save(self._sess, os.path.join(config.training.checkpoint_dir, 'model'), step)
 
     def restore(self) -> None:
+        print('Restoring model...')
         saver = tf.train.Saver()
-        saver.restore(self._sess, tf.train.latest_checkpoint(os.path.join(config.training.checkpoint_dir)))
+        saver.restore(self._sess, tf.train.latest_checkpoint(os.path.dirname(config.training.checkpoint_filename)))
 
     def close(self) -> None:
         '''Close the tf.Session'''

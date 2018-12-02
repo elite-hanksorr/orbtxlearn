@@ -1,10 +1,10 @@
 import datetime
 import os.path
 
-_log_dir = os.path.join('data', 'tf_logs')
+log_dir = os.path.join('data', 'logs')
 
-def get_log_dir() -> str:
-    return os.path.join(_log_dir, datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
+def get_run_log_dir(run_type: str) -> str:
+    return os.path.join(log_dir, datetime.datetime.now().strftime(f"{run_type}_%Y-%m-%d_%H-%M-%S"))
 
 monitor = 1  # TODO have user select this
 
@@ -37,6 +37,4 @@ class params:
 class training:
     learning_rate = 0.0002
     minimum_random_episodes = 5  # Minimum episodes to collect with random weights before we can train
-    batch_size = 1
-    max_checkpoints = 10
-    checkpoint_dir = os.path.join('data', 'model')
+    checkpoint_filename = os.path.join(log_dir, 'model')

@@ -19,10 +19,9 @@ else:
 from . import Spy, Agent, model, config
 
 @click.group()
-def main():
-    os.makedirs(config._log_dir, exist_ok=True)
+def main() -> None:
+    os.makedirs(config.log_dir, exist_ok=True)
     os.makedirs(config.episodes_dir, exist_ok=True)
-    os.makedirs(config.training.checkpoint_dir, exist_ok=True)
 
 @main.command('run')
 @click.option('--host', type=str, default='localhost')
@@ -38,12 +37,13 @@ def run(host: str, port: int, model: bool, restore_model: bool) -> None:
         print(f'gameon: {spy.playing}, score: {spy.score}, dir: {spy.direction}, pps: {spy.pps:.2f}')
         _q.put((event_type, value))
 
-    agent = Agent(config.params.image_size, config.params.image_size, 3)
+    agent = Agent('run', config.params.image_size, config.params.image_size, 3)
     if model and restore_model:
         agent.restore()
 
-    spy = Spy.make_spy(host, port, config.monitor, spy_update_callback)
+    print('Ready!')
 
+    spy = Spy.make_spy(host, port, config.monitor, spy_update_callback)
     done = False
     try:
         while not done:
@@ -109,11 +109,11 @@ def train(restore_model: bool, epochs: int) -> None:
 
 
 @main.command('model')
-def rebuild_model():
+def rebuild_model() -> None:
     tf.reset_default_graph()
-    with tf.summary.FileWriter(config.get_log_dir()) as writer, tf.Session() as sess:
-        inputs, outputs, layers = model.make_model(1, config.params.image_size, config.params.image_size, 3)
-        o_inputs, o_outputs, _ = model.make_optimizer(1, outputs['logits'])
+    with tf.summary.FileWriter(config.get_run_log_dir('test')) as writer, tf.Session() as sess:
+        inputs, outputs, layers = model.make_model(config.params.image_size, config.params.image_size, 3)
+        o_inputs, o_outputs, _ = model.make_optimizer(outputs['logits'])
         writer.add_graph(sess.graph)
 
         return
