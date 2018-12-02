@@ -98,14 +98,18 @@ def run(host: str, port: int, model: bool, restore_model: bool) -> None:
 
 @main.command('train')
 @click.option('--restore-model/--no-restore-model', default=False, help='Restore model before training')
+@click.option('--max-time', required=False, default=None, type=float, help='Maximum time (in minutes) to train')
 @click.argument('epochs', type=int)
-def train(restore_model: bool, epochs: int) -> None:
-    agent = Agent(config.params.image_size, config.params.image_size, 3)
+def train(restore_model: bool, max_time: Optional[float], epochs: int) -> None:
+    agent = Agent('train', config.params.image_size, config.params.image_size, 3)
 
     if restore_model:
         agent.restore()
 
-    agent.train(epochs)
+    if max_time is not None:
+        max_time *= 60
+
+    agent.train(epochs, max_time=max_time)
 
 
 @main.command('model')

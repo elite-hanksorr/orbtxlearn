@@ -35,6 +35,8 @@ class params:
     post_lstm_fc_nodes = []
 
 class training:
-    learning_rate = 0.0002
+    learning_rate = 0.001
     minimum_random_episodes = 5  # Minimum episodes to collect with random weights before we can train
+    batch_size = 50
+    max_checkpoints = 5
     checkpoint_filename = os.path.join(log_dir, 'model')

@@ -240,7 +240,9 @@ class Agent():
         self._file_writer.add_summary(summary, global_step=step)
         self._file_writer.flush()
 
-    def train(self, epochs: int, save_checkpoints: bool = True) -> None:
+    def train(self, epochs: int, save_checkpoints: bool = True, max_time: Optional[float] = None) -> None:
+        start_time = time.time()
+
         memory_len = self._db_conn.execute('select count(*) as count from Observations').fetchone()['count']
         if not memory_len:
             print('No samples retrieved from database, not training')
@@ -248,74 +250,71 @@ class Agent():
 
         print(f'Training on {memory_len} samples...')
 
-        # buckets: List[Dict[str, int]] = self._db_conn.execute(
-        #     '''
-        #     select round(reward, 1) as bin, count(*) as count
-        #     from Observations
-        #     group by bin
-        #     order by bin
-        #     ''').fetchall()
-
-        # sizes = sorted(b['count'] for b in buckets)
-        # min_size = sizes[len(sizes)//5] * 3 # Lowest quintile
-        # print(f'Using minsize = {min_size}')
-
         training_summary = tf.summary.merge([
             tf.summary.merge_all(scope='train'),
-            tf.summary.merge_all(scope='model(?!/conv_outputs)')
+            tf.summary.merge_all(scope='model')
         ])
 
         saver = tf.train.Saver(max_to_keep=config.training.max_checkpoints)
-        step = self._sess.run(tf.train.get_global_step())
-        while epochs > 0:
-            # sample: List[Dict[str, Any]] = []
-            # for bucket in buckets:
-            #     sample.extend(
-            #         self._db_conn.execute(
-            #             '''
-            #             select image, action, reward
-            #             from Observations
-            #             where round(reward, 1) = ?
-            #             limit ?
-            #             ''', (bucket['bin'], min(50, min_size))).fetchall())
+        for epoch in range(epochs):
+            if max_time is not None and time.time() - start_time > max_time:
+                print('Ran out of time!')
+                return
 
-            sample = self._db_conn.execute(
+            cur = self._db_conn.execute(
                 '''
-                select image, action, reward
+                select image, action, rewards
                 from Observations
-                where id in (select id from Observations order by random() limit ?)
-                ''', [100]).fetchall()
+                order by random()
+                ''')
 
-            random.shuffle(sample)
-            print(f'Got {len(sample)} samples')
+            epoch_done = False
+            image_count = 0
+            while not epoch_done:
+                if max_time is not None and time.time() - start_time > max_time:
+                    print('Ran out of time!')
+                    return
 
-            for row in sample[:epochs]:
-                if step % 20 == 0:
+                print(f'Epoch {epoch+1}/{epochs}, images {image_count+1}..{image_count+config.training.batch_size}/{memory_len}')
+
+                images = []
+                actions = []
+                rewards = []
+
+                for i in range(config.training.batch_size):
+                    row = cur.fetchone()
+                    if row is None:
+                        epoch_done = True
+                        break
+
+                    image_count += 1
+                    images.append(row['image'])
+                    actions.append(row['action'])
+                    rewards.append(self._calc_reward(row['rewards']))
+
+                run_metadata = tf.RunMetadata()
                     _, summary, step = self._sess.run(
                         [self._optim_outputs['optimizer'], training_summary, tf.train.get_global_step()],
                         feed_dict={
-                            self._inputs['images']: np.expand_dims(row['image'], 0),
-                            self._optim_inputs['actions']: np.expand_dims(row['action'], 0).astype(np.uint8),
-                            self._optim_inputs['rewards']: np.expand_dims(row['reward'], 0)
-                        })
+                        self._inputs['images']: np.array(images),
+                        self._optim_inputs['actions']: np.array(actions, dtype=np.uint8),
+                        self._optim_inputs['rewards']: np.array(rewards),
+                    }, options=tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE), run_metadata=run_metadata)
 
+                if step % 10 == 0:
                     self._file_writer.add_summary(summary, global_step=step)
-                else:
-                    _, step = self._sess.run(
-                        [self._optim_outputs['optimizer'], tf.train.get_global_step()],
-                        feed_dict={
-                            self._inputs['images']: np.expand_dims(row['image'], 0),
-                            self._optim_inputs['actions']: np.expand_dims(row['action'], 0).astype(np.uint8),
-                            self._optim_inputs['rewards']: np.expand_dims(row['reward'], 0)
-                        })
+                    self._file_writer.add_run_metadata(run_metadata, f'step_{step}', global_step=step)
+                    self._file_writer.flush()
 
-                if step % 500 == 0:
-                    saver.save(self._sess, os.path.join(config.training.checkpoint_dir, 'model'), step)
+                if step != 0 and step % (5000 // config.training.batch_size) == 0:
+                    print('Saving checkpoint...')
+                    saver.save(self._sess, config.training.checkpoint_filename, step)
 
-            self._file_writer.flush()
-            epochs -= len(sample)
-
-        saver.save(self._sess, os.path.join(config.training.checkpoint_dir, 'model'), step)
+        print('Saving final checkpoint...')
+        try:
+            saver.save(self._sess, config.training.checkpoint_filename, step)
+        except tf.errors.UnknownError:  # Could not save to existant checkpoint file
+            pass
 
     def restore(self) -> None:
         print('Restoring model...')
