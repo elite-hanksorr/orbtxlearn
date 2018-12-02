@@ -16,10 +16,13 @@ class params:
 
     explore_rate = 0.10  # Probability of ignoring model and choosing a random action
 
-    reward_nothing = -0.4  # Passive reward for accomplishing nothing but still not failing
-    reward_score = 1  # Reward for scoring one OrbtXL point
-    reward_death = -0.8  # Reward (penalty) for dying
-    reward_discount_10db = 3.0  # Seconds to reach -10dB (10%) discount
+    rewards = {
+        'nothing': -0.4,  # Passive reward for accomplishing nothing but still not failing
+        'score': 2,  # Reward for scoring one OrbtXL point
+        'death': -0.8,  # Reward (penalty) for dying
+    }
+
+    reward_discount_10db = 2.0  # Seconds to reach -10dB (10%) discount
 
     # [(filter_size, stride_size, output_depth)]
     pre_lstm_conv_layers = [

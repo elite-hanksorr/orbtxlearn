@@ -11,7 +11,7 @@ import numpy as np
 from PIL import Image
 import tensorflow as tf
 
-util.sqlite_register_ndarray()
+util.sqlite_register_custom_types()
 
 class Agent():
     SUMMARIES = [
@@ -50,7 +50,7 @@ class Agent():
                     episode_time real not null,
                     image ndarray not null,
                     action integer not null,
-                    reward real not null
+                    rewards dict not null
                 )
                 ''')
 
@@ -85,12 +85,12 @@ class Agent():
                 self._summaries[name] = tf.placeholder(dtype, shape, name=f'{name}_summary_placeholder')
                 summary_fun(name, self._summaries[name])
 
-    def _save_episode(self, episode: List[Dict[str, Any]]) -> None:
-        print('Saving episode to database...')
+    def ensure_images_exported(self) -> None:
+        if not self._current_episode:
+            return
 
+        print('Saving episode images to disk...')
         timestr = self._start_time.strftime(config.episode_strftime)
-
-        # Make new directory
         i = 0
         while True:
             try:
@@ -106,14 +106,20 @@ class Agent():
                 break
 
         for i, obs in enumerate(self._current_episode):
+            if not obs['filename']:
             obs['filename'] = os.path.join(dirname, f'{i:05}.png')
             Image.fromarray(obs['image'], mode='RGB').save(obs['filename'])
+
+    def _save_episode(self, episode: List[Dict[str, Any]]) -> None:
+        self.ensure_images_exported()
+
+        print('Saving episode to database...')
 
         with self._db_conn:
             self._db_conn.executemany(
                 '''
-                insert into Observations (episode_time, filename, image, action, reward)
-                values (:episode_time, :filename, :image, :action, :reward)
+                insert into Observations (episode_time, filename, image, action, rewards)
+                values (:episode_time, :filename, :image, :action, :rewards)
                 ''', self._current_episode)
 
 
@@ -150,7 +156,11 @@ class Agent():
             'filename': None,
             'image': image,
             'action': action,
-            'reward': config.params.reward_nothing
+            'rewards': {
+                'nothing': 1,
+                'score': 0,
+                'death': 0,
+            }
         })
 
         return action == model.CATEGORIES['keydown']
@@ -168,14 +178,18 @@ class Agent():
             'filename': None,
             'image': image,
             'action': action,
-            'reward': config.params.reward_nothing
+            'rewards': {
+                'nothing': 1,
+                'score': 0,
+                'death': 0,
+            }
         })
 
         return action == model.CATEGORIES['keydown']
 
-    def reward(self, amount: float) -> None:
+    def reward(self, kind: str, count: int = 1) -> None:
         if self._current_episode:
-            self._current_episode[-1]['reward'] += amount
+            self._current_episode[-1]['rewards'][kind] += count
 
     def gameover(self) -> None:
         if self._current_episode:
@@ -185,10 +199,12 @@ class Agent():
             # dicount ** (reward_discount_10db * fps) = 0.10
             fps = len(self._current_episode) / self._get_run_time()
             discount = 0.10 ** (1 / (config.params.reward_discount_10db * fps))
-            g = 0.0
+
+            g = {'nothing': 0, 'score': 0, 'death': 0}
             for observation in reversed(self._current_episode):
-                g = g * discount + observation['reward']
-                observation['reward'] = g
+                for k in g:
+                    g[k] = g[k] * discount + observation['rewards'][k]
+                    observation['rewards'][k] = g[k]
 
             if self._saving_episodes:
                 self._save_episode(self._current_episode)
@@ -203,11 +219,14 @@ class Agent():
             return self._current_episode[-1]['image'].reshape([1, config.params.image_size, config.params.image_size, 3])
         return np.zeros([1, config.params.image_size, config.params.image_size, 3])
 
+    def _calc_reward(self, rewards: Dict[str, Any]) -> float:
+        return sum([rewards[k] * config.params.rewards[k] for k in config.params.rewards if k in rewards])
+
     def report_game(self, final_score: int, pps: float) -> None:
         summary, step = self._sess.run(
             [tf.summary.merge_all(scope='game_stats'), tf.train.get_global_step()],
             feed_dict={
-                self._summaries['rewards']: np.array([obs['reward'] for obs in self._current_episode]),
+                self._summaries['rewards']: np.array([self._calc_reward(obs['rewards']) for obs in self._current_episode]),
                 self._summaries['run_time']: self._get_run_time(),
                 self._summaries['final_score']: final_score,
                 self._summaries['points_per_second']: pps,

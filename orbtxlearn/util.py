@@ -1,4 +1,5 @@
 import io
+import pickle
 import zlib
 
 import numpy as np
@@ -18,6 +19,9 @@ def adapt_array(arr: np.ndarray):
 def convert_array(data) -> np.ndarray:
     return np.load(io.BytesIO(zlib.decompress(data)))
 
-def sqlite_register_ndarray():
+def sqlite_register_custom_types():
     sqlite3.register_adapter(np.ndarray, adapt_array)
     sqlite3.register_converter('ndarray', convert_array)
+
+    sqlite3.register_adapter(dict, lambda d: pickle.dumps(d, protocol=pickle.HIGHEST_PROTOCOL))
+    sqlite3.register_converter('dict', lambda bs: pickle.loads(bs))
