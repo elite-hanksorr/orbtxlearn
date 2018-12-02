@@ -3,7 +3,7 @@ import queue
 import random
 import sys
 import time
-from typing import List, Tuple, Any
+from typing import List, Tuple, Any, Optional
 
 import click
 import numpy as np
@@ -78,7 +78,7 @@ def run(host: str, port: int, model: bool, restore_model: bool) -> None:
                         break
 
                     if event_type == 'score':
-                        agent.reward(value * config.params.reward_score)
+                        agent.reward('score', value)
                     elif event_type == 'playing' and value == False:
                         spy.keyup()
                         agent.gameover()
@@ -116,23 +116,32 @@ def rebuild_model() -> None:
         o_inputs, o_outputs, _ = model.make_optimizer(outputs['logits'])
         writer.add_graph(sess.graph)
 
-        return
-
         sess.run(tf.global_variables_initializer())
-        print(sess.run([outputs['logits'], outputs['action']], feed_dict={
-            inputs['images']: np.zeros([1, config.params.image_size, config.params.image_size, 3])
-        }))
 
-        for i in range(100):
+        run_options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE)
+
+        print('Testing model...')
+        for i in range(5):
+            run_metadata = tf.RunMetadata()
+            sess.run([outputs['logits'], outputs['action']], feed_dict={
+                inputs['images']: np.random.uniform(0, 256, size=[1, config.params.image_size, config.params.image_size, 3]),
+            }, options=run_options, run_metadata=run_metadata)
+
+            writer.add_run_metadata(run_metadata, f'test_eval_{i}')
+            writer.flush()
+
+        print('Testing optimizer...')
+        b = config.training.batch_size
+        for i in range(5):
+            run_metadata = tf.RunMetadata()
             sess.run(o_outputs['optimizer'], feed_dict={
-                inputs['images']: np.zeros([1, config.params.image_size, config.params.image_size, 3]),
-                o_inputs['actions']: np.array([0]),
-                o_inputs['rewards']: np.array([-1000])
-            })
+                inputs['images']: np.random.uniform(0, 256, size=[b, config.params.image_size, config.params.image_size, 3]),
+                o_inputs['actions']: np.random.uniform(0, 2, size=[b]).astype(np.uint8),
+                o_inputs['rewards']: np.random.normal(size=[b]),
+            }, options=run_options, run_metadata=run_metadata)
 
-            print(sess.run([outputs['logits'], outputs['action']], feed_dict={
-                inputs['images']: np.zeros([1, config.params.image_size, config.params.image_size, 3])
-            }))
+            writer.add_run_metadata(run_metadata, f'test_optim_{i}')
+            writer.flush()
 
 
 if __name__ == '__main__':

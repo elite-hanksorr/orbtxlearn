@@ -58,8 +58,8 @@ def fully_connected(layer, size: int, activation_fn: Optional[Callable] = tf.nn.
     kernel = tf.Variable(INITIALIZER([layer.shape.as_list()[1], size]), name='kernel')
     bias = tf.Variable(INITIALIZER([size]), name='bias')
 
-    tf.summary.histogram('kernel', kernel)
-    tf.summary.histogram('bias', bias)
+    tf.summary.histogram('kernel', kernel, family='parameters')
+    tf.summary.histogram('bias', bias, family='parameters')
 
     layer = layer @ kernel + bias
     if activation_fn is not None:
@@ -87,10 +87,17 @@ def conv2d(images, filter_size: int, strides: Union[int, List], depth: int, padd
     else:
         strides = [1, strides, strides, 1]
 
-    filter = tf.Variable(INITIALIZER([filter_size, filter_size, channels, depth]))
-    tf.summary.histogram('filter', filter)
-    conv = tf.nn.conv2d(images, filter, strides, padding=padding)
-    return tf.nn.relu(conv)
+    filter = tf.Variable(INITIALIZER([filter_size, filter_size, channels, depth]), name='filter')
+    biases = tf.Variable(INITIALIZER([depth]), name='biases')
+    conv = tf.nn.conv2d(images, filter, strides, padding=padding) + biases
+    relu = tf.nn.relu(conv)
+
+    filter_images = tf.reshape(tf.transpose(filter, [2, 3, 0, 1]), [-1, filter_size, filter_size, 1])
+    tf.summary.image('filter_image', filter_images, max_outputs=channels*depth, family='parameters')
+    tf.summary.histogram('filter', filter, family='parameters')
+    tf.summary.histogram('biases', biases, family='parameters')
+
+    return relu
 
 @in_variable_scope('lstm', default_name='lstm', reuse=tf.AUTO_REUSE)
 def lstm(layer) -> Any:
@@ -173,9 +180,7 @@ def make_model(batches: int, height: int, width: int, channels: int) \
         })
 
 @in_name_scope('train')
-def make_optimizer(batches: int, logits_layer):
-    actions = tf.placeholder(tf.int32, shape=[batches], name='actions_placeholder')
-    rewards = tf.placeholder(tf.float32, shape=[batches], name='rewards_placeholder')
+    print('Building optimizer...')
 
     one_hot = tf.one_hot(tf.reshape(actions, [batches]), 2)
 

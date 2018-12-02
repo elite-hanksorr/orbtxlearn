@@ -79,13 +79,12 @@ class Agent():
         self._sess.run(self._outputs['action'], feed_dict={
             self._inputs['images']: np.zeros([1, self._height, self._width, self._channels])
         })
-        print('Ready!')
 
     def _create_summaries(self) -> None:
         with tf.variable_scope('game_stats'):
             for name, summary_fun, dtype, shape in Agent.SUMMARIES:
                 self._summaries[name] = tf.placeholder(dtype, shape, name=f'{name}_summary_placeholder')
-                summary_fun(name, self._summaries[name])
+                summary_fun(name, self._summaries[name], family='game_stats')
 
     def ensure_images_exported(self) -> None:
         if not self._current_episode:
@@ -141,11 +140,10 @@ class Agent():
         start_time = time.time()
         episode_time = (datetime.datetime.now() - self._start_time).total_seconds()
         step = tf.train.get_or_create_global_step()
-        logits, softmax, action, summary, _, step = self._sess.run([self._outputs['logits'], self._outputs['softmax'], self._outputs['action'], tf.summary.merge_all(scope='model/conv_outputs'), tf.assign(step, step+1), step], feed_dict={
+        logits, softmax, action = self._sess.run([self._outputs['logits'], self._outputs['softmax'], self._outputs['action']], feed_dict={
             self._inputs['images']: image.reshape((1, self._height, self._width, self._channels))
         })
         elapsed = time.time() - start_time
-        self._file_writer.add_summary(summary, global_step=step)
 
         action = int(action)
         if random.random() < config.params.explore_rate:
@@ -195,11 +193,15 @@ class Agent():
 
     def gameover(self) -> None:
         if self._current_episode:
-            self._current_episode[-1]['reward'] += config.params.reward_death
+            self._current_episode[-1]['rewards']['death'] += 1
+
+            run_time = self._get_run_time()
+            if run_time == 0:  # TODO is this the best way to fail?
+                return
 
             # Discount all rewards
             # dicount ** (reward_discount_10db * fps) = 0.10
-            fps = len(self._current_episode) / self._get_run_time()
+            fps = len(self._current_episode) / run_time
             discount = 0.10 ** (1 / (config.params.reward_discount_10db * fps))
 
             g = {'nothing': 0, 'score': 0, 'death': 0}
@@ -323,5 +325,6 @@ class Agent():
     def close(self) -> None:
         '''Close the tf.Session'''
 
+        self.ensure_images_exported()
         self._file_writer.close()
         self._sess.close()
